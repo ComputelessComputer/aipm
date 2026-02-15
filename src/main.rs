@@ -2873,7 +2873,29 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     };
 
     let box_width = (cols as usize).min(60).max(40);
-    let box_height = 12u16;
+    let label_w = 14usize;
+    let value_w = box_width.saturating_sub(label_w + 4);
+
+    // Pre-compute wrapped description lines so we can size the box.
+    let desc_text = if task.description.trim().is_empty() {
+        "—".to_string()
+    } else {
+        task.description.clone()
+    };
+    let desc_editing = app.edit_field == EditField::Description && app.editing_text;
+    let desc_display = if desc_editing {
+        format!("{}▏", app.edit_buf)
+    } else {
+        desc_text.clone()
+    };
+    let max_desc_lines = 6usize;
+    let desc_wrapped = wrap_text(&desc_display, value_w, max_desc_lines);
+    let desc_lines = desc_wrapped.len().max(1);
+    let _desc_extra = desc_lines.saturating_sub(1) as u16;
+
+    // box_height: border(1) + gap(1) + Title(1) + Desc(N) + Bucket(1) + Progress(1)
+    //             + Priority(1) + DueDate(1) + gap(1) + help(1) = 9 + N
+    let box_height = (9 + desc_lines as u16).min(rows.saturating_sub(2));
     let x0 = (cols.saturating_sub(box_width as u16)) / 2;
     let y0 = (rows.saturating_sub(box_height)) / 2;
 
@@ -2902,23 +2924,42 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     )?;
 
     let inner_x = x0 + 2;
-    let label_w = 14usize;
-    let value_w = box_width.saturating_sub(label_w + 4);
+    let inner_w = box_width.saturating_sub(4);
 
-    let fields = EditField::ALL;
-    for (i, field) in fields.iter().enumerate() {
-        let y = y0 + 2 + i as u16;
+    // Track the current y offset as we render fields.
+    let mut y_cursor = y0 + 2;
+
+    for field in EditField::ALL.iter() {
         let is_current = *field == app.edit_field;
+
+        if *field == EditField::Description {
+            // Render description as multi-line.
+            let label = format!("{:<width$}", field.label(), width = label_w);
+            for (li, line) in desc_wrapped.iter().enumerate() {
+                queue!(stdout, MoveTo(inner_x, y_cursor))?;
+                if is_current {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::White)
+                    )?;
+                } else {
+                    queue!(stdout, SetForegroundColor(Color::White))?;
+                }
+                let prefix = if li == 0 { &label } else { &" ".repeat(label_w) };
+                let row_text = format!("{}{}", prefix, clamp_text(line, value_w));
+                queue!(
+                    stdout,
+                    Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                    ResetColor
+                )?;
+                y_cursor += 1;
+            }
+            continue;
+        }
 
         let value = match field {
             EditField::Title => task.title.clone(),
-            EditField::Description => {
-                if task.description.trim().is_empty() {
-                    "—".to_string()
-                } else {
-                    task.description.clone()
-                }
-            }
             EditField::Bucket => task.bucket.title().to_string(),
             EditField::Progress => {
                 format!(
@@ -2932,6 +2973,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 .due_date
                 .map(|d| d.format("%Y-%m-%d").to_string())
                 .unwrap_or_else(|| "—".to_string()),
+            EditField::Description => unreachable!(),
         };
 
         let show_value = if is_current && app.editing_text {
@@ -2947,7 +2989,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
             value
         };
 
-        queue!(stdout, MoveTo(inner_x, y))?;
+        queue!(stdout, MoveTo(inner_x, y_cursor))?;
         if is_current {
             queue!(
                 stdout,
@@ -2962,12 +3004,10 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         let row_text = format!("{}{}", label, clamp_text(&show_value, value_w));
         queue!(
             stdout,
-            Print(pad_to_width(
-                &clamp_text(&row_text, box_width.saturating_sub(4)),
-                box_width.saturating_sub(4)
-            )),
+            Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
             ResetColor
         )?;
+        y_cursor += 1;
     }
 
     // Help line.
@@ -2981,23 +3021,42 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         stdout,
         MoveTo(inner_x, help_y),
         SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(help, box_width.saturating_sub(4))),
+        Print(clamp_text(help, inner_w)),
         ResetColor
     )?;
 
     // Cursor in text editing mode.
     if app.editing_text {
-        let field_idx = EditField::ALL
-            .iter()
-            .position(|f| *f == app.edit_field)
-            .unwrap_or(0);
-        let cy = y0 + 2 + field_idx as u16;
-        let cx = inner_x as usize + label_w + app.edit_buf.width();
-        queue!(
-            stdout,
-            MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
-            Show
-        )?;
+        // Compute y position for the current field.
+        let mut cy = y0 + 2;
+        for field in EditField::ALL.iter() {
+            if *field == app.edit_field {
+                break;
+            }
+            if *field == EditField::Description {
+                cy += desc_lines as u16;
+            } else {
+                cy += 1;
+            }
+        }
+        // For description, cursor goes on the last wrapped line.
+        if app.edit_field == EditField::Description {
+            cy += desc_lines.saturating_sub(1) as u16;
+            let last_line_w = desc_wrapped.last().map(|s| s.width()).unwrap_or(0);
+            let cx = inner_x as usize + label_w + last_line_w;
+            queue!(
+                stdout,
+                MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
+                Show
+            )?;
+        } else {
+            let cx = inner_x as usize + label_w + app.edit_buf.width();
+            queue!(
+                stdout,
+                MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
+                Show
+            )?;
+        }
     } else {
         queue!(stdout, Hide)?;
     }
