@@ -56,6 +56,8 @@ pub enum TriageAction {
     Create,
     /// AI decided to update an existing task (id prefix).
     Update(String),
+    /// AI decided to delete an existing task (id prefix).
+    Delete(String),
 }
 
 #[derive(Debug, Clone)]
@@ -579,12 +581,12 @@ struct TriageEnriched {
 }
 
 fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiResult {
-    let system = "You are an expert AI project manager. Analyze the user's message and decide whether to CREATE a new task or UPDATE an existing one. Output ONLY valid JSON. No markdown.";
+    let system = "You are an expert AI project manager. Analyze the user's message and decide whether to CREATE a new task, UPDATE an existing one, or DELETE an existing one. Output ONLY valid JSON. No markdown.";
 
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
 
     let user = format!(
-        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent:\n- If the message is about an EXISTING task (status update, clarification, etc.), UPDATE it.\n- If it's a genuinely new piece of work, CREATE a new task.\n- Generate a clean, actionable title (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\",\n  \"target_id\": \"id_prefix\" | null,\n  \"title\": string,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\",\n  \"description\": string,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null\n}}\n",
+        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent:\n- If the message is about an EXISTING task (status update, clarification, etc.), UPDATE it.\n- If the user wants to remove/delete/cancel a task, DELETE it.\n- If it's a genuinely new piece of work, CREATE a new task.\n- For delete: do NOT change any fields, just set action and target_id.\n- Generate a clean, actionable title (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\" | \"delete\",\n  \"target_id\": \"id_prefix\" | null,\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null\n}}\n",
         raw_input,
         triage_ctx
     );
@@ -648,14 +650,23 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
     };
 
     let action_str = triaged.action.as_deref().unwrap_or("create");
-    let triage_action = if action_str == "update" {
-        if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
-            Some(TriageAction::Update(target.trim().to_string()))
-        } else {
-            Some(TriageAction::Create)
+    let triage_action = match action_str {
+        "update" => {
+            if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(TriageAction::Update(target.trim().to_string()))
+            } else {
+                Some(TriageAction::Create)
+            }
         }
-    } else {
-        Some(TriageAction::Create)
+        "delete" => {
+            if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(TriageAction::Delete(target.trim().to_string()))
+            } else {
+                // Can't delete without a target; fall back to create.
+                Some(TriageAction::Create)
+            }
+        }
+        _ => Some(TriageAction::Create),
     };
 
     let mut update = TaskUpdate {

@@ -147,7 +147,7 @@ struct App {
     scroll_admin: usize,
 
     input: String,
-    status: Option<(String, Instant)>,
+    status: Option<(String, Instant, bool)>,
 
     edit_task_id: Option<Uuid>,
     edit_field: EditField,
@@ -261,9 +261,9 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
             needs_redraw = true;
         }
 
-        // Auto-dismiss toast after timeout.
-        if let Some((_, shown_at)) = &app.status {
-            if shown_at.elapsed() >= TOAST_DURATION {
+        // Auto-dismiss toast after timeout (skip for persistent toasts).
+        if let Some((_, shown_at, persistent)) = &app.status {
+            if !persistent && shown_at.elapsed() >= TOAST_DURATION {
                 app.status = None;
                 needs_redraw = true;
             } else {
@@ -302,10 +302,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return Ok(true);
     }
 
-    // Toast dismissal intercepts all keys.
-    if app.status.is_some() {
-        app.status = None;
-        return Ok(false);
+    // Toast dismissal intercepts all keys (skip for persistent toasts).
+    if let Some((_, _, persistent)) = &app.status {
+        if !persistent {
+            app.status = None;
+            return Ok(false);
+        }
     }
 
     // Delete confirmation intercepts all keys.
@@ -531,13 +533,13 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                 app.status = Some((format!(
                                     "AI editing: {}…",
                                     task.title
-                                ), Instant::now()));
+                                ), Instant::now(), true));
                             } else {
-                                app.status = Some(("AI not configured".to_string(), Instant::now()));
+                                app.status = Some(("AI not configured".to_string(), Instant::now(), false));
                             }
                         }
                     } else {
-                        app.status = Some(("No task selected".to_string(), Instant::now()));
+                        app.status = Some(("No task selected".to_string(), Instant::now(), false));
                     }
                 }
                 app.input.clear();
@@ -567,7 +569,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     triage_input: Some(raw_input),
                     triage_context: Some(triage_ctx),
                 });
-                app.status = Some(("AI thinking…".to_string(), Instant::now()));
+                app.status = Some(("AI thinking…".to_string(), Instant::now(), true));
             } else {
                 // Fallback: local inference when AI is not configured.
                 let maybe = ai::infer_new_task(&raw_input);
@@ -581,7 +583,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         task.due_date = Some(d);
                     }
                     app.tasks.push(task);
-                    app.status = Some((format!("Created in {}", hints.bucket.title()), Instant::now()));
+                    app.status = Some((format!("Created in {}", hints.bucket.title()), Instant::now(), false));
                     ensure_default_selection(app);
                     persist(app);
                 }
@@ -685,7 +687,7 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         task.title,
                         from.title(),
                         task.progress.title()
-                    ), Instant::now()));
+                    ), Instant::now(), false));
                     persist(app);
                 }
             }
@@ -701,7 +703,7 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         task.title,
                         from.title(),
                         task.progress.title()
-                    ), Instant::now()));
+                    ), Instant::now(), false));
                     persist(app);
                 }
             }
@@ -740,7 +742,7 @@ fn delete_selected(app: &mut App) {
     if let Some(pos) = app.tasks.iter().position(|t| t.id == id) {
         let title = app.tasks[pos].title.clone();
         app.tasks.remove(pos);
-        app.status = Some((format!("Deleted: {title}"), Instant::now()));
+        app.status = Some((format!("Deleted: {title}"), Instant::now(), false));
         ensure_default_selection(app);
         persist(app);
     }
@@ -1112,7 +1114,7 @@ fn persist(app: &mut App) {
         return;
     };
     if let Err(err) = storage.save_tasks(&app.tasks) {
-        app.status = Some((format!("Save failed: {err}"), Instant::now()));
+        app.status = Some((format!("Save failed: {err}"), Instant::now(), false));
     }
 }
 
@@ -1121,7 +1123,7 @@ fn persist_settings(app: &mut App) {
         return;
     };
     if let Err(err) = storage.save_settings(&app.settings) {
-        app.status = Some((format!("Settings save failed: {err}"), Instant::now()));
+        app.status = Some((format!("Settings save failed: {err}"), Instant::now(), false));
     }
 }
 
@@ -1272,7 +1274,7 @@ fn poll_ai(app: &mut App) -> bool {
     let mut changed = false;
     for result in results {
         if let Some(err) = result.error {
-            app.status = Some((format!("AI error: {}", err), Instant::now()));
+            app.status = Some((format!("AI error: {}", err), Instant::now(), false));
             continue;
         }
 
@@ -1303,7 +1305,7 @@ fn poll_ai(app: &mut App) -> bool {
                             &result.update.dependencies,
                         );
                     }
-                    app.status = Some((format!("AI created: {}", task.title), Instant::now()));
+                    app.status = Some((format!("AI created: {}", task.title), Instant::now(), false));
                     app.tasks.push(task);
                     changed = true;
                 }
@@ -1325,11 +1327,25 @@ fn poll_ai(app: &mut App) -> bool {
                         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                             let now = Utc::now();
                             apply_update(task, &result.update, &deps, now);
-                            app.status = Some((format!("AI updated: {}", task.title), Instant::now()));
+                            app.status = Some((format!("AI updated: {}", task.title), Instant::now(), false));
                             changed = true;
                         }
                     } else {
-                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now()));
+                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
+                    }
+                }
+                llm::TriageAction::Delete(prefix) => {
+                    let target = app.tasks.iter().position(|t| {
+                        let short = t.id.to_string().chars().take(8).collect::<String>();
+                        short.to_ascii_lowercase() == prefix.to_ascii_lowercase()
+                    });
+                    if let Some(pos) = target {
+                        let title = app.tasks[pos].title.clone();
+                        app.tasks.remove(pos);
+                        app.status = Some((format!("AI deleted: {}", title), Instant::now(), false));
+                        changed = true;
+                    } else {
+                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
                     }
                 }
             }
@@ -1353,7 +1369,7 @@ fn poll_ai(app: &mut App) -> bool {
 
         let now = Utc::now();
         if apply_update(task, &result.update, &deps, now) {
-            app.status = Some((format!("AI updated: {}", task.title), Instant::now()));
+            app.status = Some((format!("AI updated: {}", task.title), Instant::now(), false));
             changed = true;
         }
     }
@@ -2574,7 +2590,7 @@ fn mask_api_key(key: &str) -> String {
 }
 
 fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
-    let Some((status, shown_at)) = &app.status else {
+    let Some((status, shown_at, persistent)) = &app.status else {
         return Ok(());
     };
 
@@ -2644,29 +2660,44 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
         )?;
     }
 
-    // Countdown ticker.
-    let elapsed = shown_at.elapsed();
-    let remaining = TOAST_DURATION.saturating_sub(elapsed);
-    let secs_left = remaining.as_secs() + if remaining.subsec_millis() > 0 { 1 } else { 0 };
-    let total_ticks = 6usize;
-    let filled = (total_ticks as u64 * remaining.as_millis() as u64
-        / TOAST_DURATION.as_millis() as u64) as usize;
-    let bar: String = "\u{2501}".repeat(filled)
-        + &"\u{2509}".repeat(total_ticks.saturating_sub(filled));
-    let ticker = format!("{}s {}", secs_left, bar);
-    let ticker_w = ticker.width();
+    // Countdown ticker / spinner for persistent toasts.
+    if *persistent {
+        // Animated spinner for persistent (AI-thinking) toasts.
+        let frames = ["⠋", "⠙", "⠸", "⠰", "⠦", "⠇"];
+        let idx = (shown_at.elapsed().as_millis() / 200) as usize % frames.len();
+        let spinner = frames[idx];
+        let hint = format!("{} working…", spinner);
+        queue!(
+            stdout,
+            MoveTo(inner_x, y0 + box_height - 1),
+            SetForegroundColor(Color::DarkGrey),
+            Print(clamp_text(&hint, inner_w)),
+            ResetColor
+        )?;
+    } else {
+        let elapsed = shown_at.elapsed();
+        let remaining = TOAST_DURATION.saturating_sub(elapsed);
+        let secs_left = remaining.as_secs() + if remaining.subsec_millis() > 0 { 1 } else { 0 };
+        let total_ticks = 6usize;
+        let filled = (total_ticks as u64 * remaining.as_millis() as u64
+            / TOAST_DURATION.as_millis() as u64) as usize;
+        let bar: String = "━".repeat(filled)
+            + &"┉".repeat(total_ticks.saturating_sub(filled));
+        let ticker = format!("{}s {}", secs_left, bar);
+        let ticker_w = ticker.width();
 
-    // Dismiss hint with ticker right-aligned.
-    let hint = "any key";
-    let gap = inner_w.saturating_sub(hint.width() + ticker_w);
-    let dismiss_line = format!("{}{}{}", hint, " ".repeat(gap), ticker);
-    queue!(
-        stdout,
-        MoveTo(inner_x, y0 + box_height - 1),
-        SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(&dismiss_line, inner_w)),
-        ResetColor
-    )?;
+        // Dismiss hint with ticker right-aligned.
+        let hint = "any key";
+        let gap = inner_w.saturating_sub(hint.width() + ticker_w);
+        let dismiss_line = format!("{}{}{}", hint, " ".repeat(gap), ticker);
+        queue!(
+            stdout,
+            MoveTo(inner_x, y0 + box_height - 1),
+            SetForegroundColor(Color::DarkGrey),
+            Print(clamp_text(&dismiss_line, inner_w)),
+            ResetColor
+        )?;
+    }
 
     Ok(())
 }
