@@ -624,7 +624,19 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             ensure_default_selection(app);
         }
         KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
-        KeyCode::Down | KeyCode::Char('j') => move_selection(app, 1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket);
+            let at_last = app
+                .selected_task_id
+                .and_then(|id| bucket_tasks.iter().position(|&idx| app.tasks[idx].id == id))
+                .map(|pos| pos >= bucket_tasks.len().saturating_sub(1))
+                .unwrap_or(true);
+            if at_last {
+                app.focus = Focus::Input;
+            } else {
+                move_selection(app, 1);
+            }
+        }
         KeyCode::Char('p') | KeyCode::Char(' ') => {
             if let Some(id) = app.selected_task_id {
                 let now = Utc::now();
