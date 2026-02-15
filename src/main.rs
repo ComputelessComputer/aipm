@@ -255,6 +255,7 @@ const TOAST_DURATION: Duration = Duration::from_secs(3);
 
 fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     let mut needs_redraw = true;
+    let mut needs_clear = true; // full screen clear on first draw
 
     loop {
         if poll_ai(app) {
@@ -266,27 +267,42 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
             if !persistent && shown_at.elapsed() >= TOAST_DURATION {
                 app.status = None;
                 needs_redraw = true;
+                needs_clear = true; // clear toast remnants
             } else {
-                // Redraw to update the countdown ticker.
+                // Redraw to update the countdown ticker / spinner.
                 needs_redraw = true;
             }
         }
 
         if needs_redraw {
-            render(stdout, app)?;
+            render(stdout, app, needs_clear)?;
             needs_redraw = false;
+            needs_clear = false;
         }
 
         if event::poll(Duration::from_millis(200))? {
+            let prev_tab = app.tab;
+            let prev_focus = app.focus;
+            let prev_edit = app.edit_task_id;
+            let prev_confirm = app.confirm_delete_id;
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(app, key)? {
                         break;
                     }
                     needs_redraw = true;
+                    // Full clear when layout changes significantly.
+                    if app.tab != prev_tab
+                        || app.focus != prev_focus
+                        || app.edit_task_id != prev_edit
+                        || app.confirm_delete_id != prev_confirm
+                    {
+                        needs_clear = true;
+                    }
                 }
                 Event::Resize(_, _) => {
                     needs_redraw = true;
+                    needs_clear = true;
                 }
                 _ => {}
             }
@@ -591,7 +607,30 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                // Option+Backspace: delete last word.
+                let trimmed = app.input.trim_end().len();
+                app.input.truncate(trimmed);
+                while !app.input.is_empty() && !app.input.ends_with(' ') {
+                    app.input.pop();
+                }
+            } else {
+                app.input.pop();
+            }
+            Ok(false)
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+U: clear entire input.
+            app.input.clear();
+            Ok(false)
+        }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+W: delete last word.
+            let trimmed = app.input.trim_end().len();
+            app.input.truncate(trimmed);
+            while !app.input.is_empty() && !app.input.ends_with(' ') {
+                app.input.pop();
+            }
             Ok(false)
         }
         KeyCode::Char(ch) => {
@@ -1740,9 +1779,12 @@ fn visible_cards(cards_area_height: usize) -> usize {
     cards_area_height / CARD_HEIGHT
 }
 
-fn render(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
+fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
-    queue!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+    if clear {
+        queue!(stdout, Clear(ClearType::All))?;
+    }
+    queue!(stdout, MoveTo(0, 0))?;
 
     if cols < 60 || rows < 12 {
         queue!(
@@ -1924,14 +1966,17 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
-            Print(clamp_text(
-                "type a task + enter (e.g. \"prepare onboarding\")",
-                max_input
+            Print(pad_to_width(
+                &clamp_text(
+                    "type a task + enter (e.g. \"prepare onboarding\")",
+                    max_input
+                ),
+                max_input,
             )),
             ResetColor
         )?;
     } else {
-        queue!(stdout, Print(&shown), ResetColor)?;
+        queue!(stdout, Print(pad_to_width(&shown, max_input)), ResetColor)?;
     }
 
     // Separator below input.
