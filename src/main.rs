@@ -1734,7 +1734,7 @@ fn render_bucket_column(
         let lines = [
             format!("{}", task.title),
             format!(
-                "Description: {}",
+                "{}",
                 if task.description.trim().is_empty() {
                     "—"
                 } else {
@@ -1760,9 +1760,18 @@ fn render_bucket_column(
                 queue!(stdout, SetForegroundColor(Color::White))?;
             }
 
+            // Title: bold + italic.
+            if line_idx == 0 {
+                queue!(
+                    stdout,
+                    SetAttribute(Attribute::Bold),
+                    SetAttribute(Attribute::Italic)
+                )?;
+            }
+
             let line = format!(" {}", line);
             let padded = pad_to_width(&clamp_text(&line, width), width);
-            queue!(stdout, Print(padded), ResetColor)?;
+            queue!(stdout, Print(padded), SetAttribute(Attribute::Reset), ResetColor)?;
         }
 
         // Spacer line
