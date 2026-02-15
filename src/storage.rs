@@ -7,6 +7,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Task;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiSettings {
+    pub enabled: bool,
+    pub api_key: String,
+    pub model: String,
+    pub api_url: String,
+    pub timeout_secs: u64,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        AiSettings {
+            enabled: true,
+            api_key: String::new(),
+            model: "gpt-5.2-chat-latest".to_string(),
+            api_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            timeout_secs: 30,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Store {
     version: u32,
@@ -15,31 +36,29 @@ struct Store {
 
 #[derive(Debug, Clone)]
 pub struct Storage {
-    path: PathBuf,
+    dir: PathBuf,
 }
 
 impl Storage {
     pub fn new() -> Option<Storage> {
         let dir = data_dir()?;
-        Some(Storage {
-            path: dir.join("tasks.json"),
-        })
+        Some(Storage { dir })
     }
 
     pub fn load_tasks(&self) -> io::Result<Vec<Task>> {
-        if !self.path.is_file() {
+        let path = self.dir.join("tasks.json");
+        if !path.is_file() {
             return Ok(Vec::new());
         }
-        let contents = fs::read_to_string(&self.path)?;
+        let contents = fs::read_to_string(&path)?;
         let store: Store = serde_json::from_str(&contents)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(store.tasks)
     }
 
     pub fn save_tasks(&self, tasks: &[Task]) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let path = self.dir.join("tasks.json");
+        fs::create_dir_all(&self.dir)?;
 
         let store = Store {
             version: 1,
@@ -48,9 +67,31 @@ impl Storage {
         let json = serde_json::to_string_pretty(&store)
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-        let tmp_path = self.path.with_extension("json.tmp");
+        let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, json)?;
-        fs::rename(&tmp_path, &self.path)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    pub fn load_settings(&self) -> io::Result<AiSettings> {
+        let path = self.dir.join("settings.json");
+        if !path.is_file() {
+            return Ok(AiSettings::default());
+        }
+        let contents = fs::read_to_string(&path)?;
+        let settings: AiSettings = serde_json::from_str(&contents)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        Ok(settings)
+    }
+
+    pub fn save_settings(&self, settings: &AiSettings) -> io::Result<()> {
+        let path = self.dir.join("settings.json");
+        fs::create_dir_all(&self.dir)?;
+        let json = serde_json::to_string_pretty(settings)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 }

@@ -21,17 +21,52 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
 use crate::model::{Bucket, Progress, Task};
-use crate::storage::Storage;
+use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Default,
     Timeline,
     Kanban,
+    Settings,
+}
+
+const MODEL_OPTIONS: &[&str] = &[
+    "gpt-5.2-chat-latest",
+    "gpt-5.2",
+    "gpt-5.1-chat-latest",
+    "gpt-5-chat",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+];
+
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Default, Tab::Timeline, Tab::Kanban, Tab::Settings];
+
+    fn next(self) -> Tab {
+        match self {
+            Tab::Default => Tab::Timeline,
+            Tab::Timeline => Tab::Kanban,
+            Tab::Kanban => Tab::Settings,
+            Tab::Settings => Tab::Default,
+        }
+    }
+
+    fn prev(self) -> Tab {
+        match self {
+            Tab::Default => Tab::Settings,
+            Tab::Timeline => Tab::Default,
+            Tab::Kanban => Tab::Timeline,
+            Tab::Settings => Tab::Kanban,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
+    Tabs,
     Board,
     Input,
     Edit,
@@ -69,6 +104,35 @@ impl EditField {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsField {
+    AiEnabled,
+    ApiKey,
+    Model,
+    ApiUrl,
+    Timeout,
+}
+
+impl SettingsField {
+    const ALL: [SettingsField; 5] = [
+        SettingsField::AiEnabled,
+        SettingsField::ApiKey,
+        SettingsField::Model,
+        SettingsField::ApiUrl,
+        SettingsField::Timeout,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            SettingsField::AiEnabled => "AI Enabled",
+            SettingsField::ApiKey => "API Key",
+            SettingsField::Model => "Model",
+            SettingsField::ApiUrl => "API URL",
+            SettingsField::Timeout => "Timeout (sec)",
+        }
+    }
+}
+
 struct App {
     storage: Option<Storage>,
     tasks: Vec<Task>,
@@ -94,6 +158,13 @@ struct App {
     kanban_stage: Progress,
     kanban_selected: Option<Uuid>,
     kanban_scroll: [usize; 4],
+
+    confirm_delete_id: Option<Uuid>,
+
+    settings: AiSettings,
+    settings_field: SettingsField,
+    settings_buf: String,
+    settings_editing: bool,
 }
 
 struct TerminalGuard;
@@ -136,11 +207,15 @@ fn main() -> io::Result<()> {
         },
         None => Vec::new(),
     };
+    let settings = match &storage {
+        Some(s) => s.load_settings().unwrap_or_default(),
+        None => AiSettings::default(),
+    };
 
     let mut app = App {
         storage,
         tasks,
-        ai: llm::AiRuntime::from_env(),
+        ai: llm::AiRuntime::from_settings(&settings),
         tab: Tab::Default,
         focus: Focus::Input,
         selected_bucket: Bucket::Team,
@@ -157,6 +232,11 @@ fn main() -> io::Result<()> {
         kanban_stage: Progress::Backlog,
         kanban_selected: None,
         kanban_scroll: [0; 4],
+        confirm_delete_id: None,
+        settings,
+        settings_field: SettingsField::AiEnabled,
+        settings_buf: String::new(),
+        settings_editing: false,
     };
 
     ensure_default_selection(&mut app);
@@ -205,17 +285,32 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return Ok(true);
     }
 
+    // Delete confirmation intercepts all keys.
+    if app.confirm_delete_id.is_some() {
+        return handle_confirm_delete_key(app, key);
+    }
+
     // Edit overlay intercepts all keys.
     if app.focus == Focus::Edit {
         return handle_edit_key(app, key);
     }
 
+    // Settings field editing intercepts all keys.
+    if app.tab == Tab::Settings && app.settings_editing {
+        return handle_settings_edit_key(app, key);
+    }
+
+    // Tab bar navigation intercepts all keys.
+    if app.focus == Focus::Tabs {
+        return handle_tabs_key(app, key);
+    }
+
     // Global quit from board focus.
-    if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) && app.focus == Focus::Board {
+    if key.code == KeyCode::Char('q') && app.focus == Focus::Board {
         return Ok(true);
     }
 
-    // Global tab switching (not while typing in input).
+    // Tab switching with 1/2/3/4 (not while typing in input).
     if app.focus != Focus::Input {
         match key.code {
             KeyCode::Char('1') => {
@@ -236,6 +331,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.status = None;
                 return Ok(false);
             }
+            KeyCode::Char('4') => {
+                app.tab = Tab::Settings;
+                app.focus = Focus::Board;
+                app.settings_editing = false;
+                app.status = None;
+                return Ok(false);
+            }
             _ => {}
         }
     }
@@ -244,12 +346,59 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         Tab::Default => handle_default_tab_key(app, key),
         Tab::Timeline => handle_readonly_tab_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
+        Tab::Settings => handle_settings_key(app, key),
     }
+}
+
+fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.tab = app.tab.prev();
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            app.tab = app.tab.next();
+        }
+        KeyCode::Enter => {
+            app.focus = match app.tab {
+                Tab::Default => Focus::Input,
+                _ => Focus::Board,
+            };
+            app.status = None;
+        }
+        KeyCode::Char('1') => {
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            app.status = None;
+        }
+        KeyCode::Char('2') => {
+            app.tab = Tab::Timeline;
+            app.focus = Focus::Board;
+            app.status = None;
+        }
+        KeyCode::Char('3') => {
+            app.tab = Tab::Kanban;
+            app.focus = Focus::Board;
+            app.status = None;
+        }
+        KeyCode::Char('4') => {
+            app.tab = Tab::Settings;
+            app.focus = Focus::Board;
+            app.settings_editing = false;
+            app.status = None;
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn handle_readonly_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => Ok(true),
+        KeyCode::Char('q') => Ok(true),
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+            Ok(false)
+        }
         KeyCode::Char('i') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
@@ -264,6 +413,7 @@ fn handle_default_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         Focus::Input => handle_input_key(app, key),
         Focus::Board => handle_board_key(app, key),
         Focus::Edit => handle_edit_key(app, key),
+        Focus::Tabs => Ok(false), // handled earlier in handle_key
     }
 }
 
@@ -279,6 +429,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
+            if app.input.trim().eq_ignore_ascii_case("exit") {
+                return Ok(true);
+            }
             let maybe = ai::infer_new_task(&app.input);
             if let Some(hints) = maybe {
                 let lock_bucket = hints.bucket_locked;
@@ -340,9 +493,29 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 }
 
+fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Enter => {
+            if let Some(id) = app.confirm_delete_id.take() {
+                app.selected_task_id = Some(id);
+                delete_selected(app);
+            }
+        }
+        KeyCode::Esc => {
+            app.confirm_delete_id = None;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+            return Ok(false);
+        }
         KeyCode::Tab | KeyCode::Char('i') => {
             app.focus = Focus::Input;
             return Ok(false);
@@ -351,8 +524,10 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             open_edit(app);
             return Ok(false);
         }
-        KeyCode::Char('d') | KeyCode::Char('x') => {
-            delete_selected(app);
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
+            if let Some(id) = app.selected_task_id {
+                app.confirm_delete_id = Some(id);
+            }
             return Ok(false);
         }
         _ => {}
@@ -671,12 +846,12 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             _ => {}
         },
-        KeyCode::Char('d') | KeyCode::Char('x') => {
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
             let id = app.edit_task_id;
             close_edit(app);
             if let Some(task_id) = id {
                 app.selected_task_id = Some(task_id);
-                delete_selected(app);
+                app.confirm_delete_id = Some(task_id);
             }
         }
         _ => {}
@@ -687,7 +862,11 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
 fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+            return Ok(false);
+        }
         KeyCode::Char('i') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
@@ -750,6 +929,11 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 }
             }
         }
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
+            if let Some(id) = app.kanban_selected {
+                app.confirm_delete_id = Some(id);
+            }
+        }
         _ => {}
     }
 
@@ -808,6 +992,149 @@ fn persist(app: &mut App) {
     if let Err(err) = storage.save_tasks(&app.tasks) {
         app.status = Some(format!("Save failed: {err}"));
     }
+}
+
+fn persist_settings(app: &mut App) {
+    let Some(storage) = &app.storage else {
+        return;
+    };
+    if let Err(err) = storage.save_settings(&app.settings) {
+        app.status = Some(format!("Settings save failed: {err}"));
+    }
+}
+
+fn rebuild_ai(app: &mut App) {
+    app.ai = llm::AiRuntime::from_settings(&app.settings);
+}
+
+fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+            return Ok(false);
+        }
+        KeyCode::Char('i') => {
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            return Ok(false);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let idx = SettingsField::ALL
+                .iter()
+                .position(|f| *f == app.settings_field)
+                .unwrap_or(0);
+            let next = if idx == 0 {
+                SettingsField::ALL.len() - 1
+            } else {
+                idx - 1
+            };
+            app.settings_field = SettingsField::ALL[next];
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let idx = SettingsField::ALL
+                .iter()
+                .position(|f| *f == app.settings_field)
+                .unwrap_or(0);
+            let next = (idx + 1) % SettingsField::ALL.len();
+            app.settings_field = SettingsField::ALL[next];
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => match app.settings_field {
+            SettingsField::AiEnabled => {
+                app.settings.enabled = !app.settings.enabled;
+                persist_settings(app);
+                rebuild_ai(app);
+            }
+            SettingsField::ApiKey => {
+                app.settings_buf = app.settings.api_key.clone();
+                app.settings_editing = true;
+            }
+            SettingsField::Model => {
+                cycle_model(app, true);
+            }
+            SettingsField::ApiUrl => {
+                app.settings_buf = app.settings.api_url.clone();
+                app.settings_editing = true;
+            }
+            SettingsField::Timeout => {
+                app.settings_buf = app.settings.timeout_secs.to_string();
+                app.settings_editing = true;
+            }
+        },
+        KeyCode::Left => match app.settings_field {
+            SettingsField::AiEnabled => {
+                app.settings.enabled = !app.settings.enabled;
+                persist_settings(app);
+                rebuild_ai(app);
+            }
+            SettingsField::Model => {
+                cycle_model(app, false);
+            }
+            _ => {}
+        },
+        KeyCode::Right => match app.settings_field {
+            SettingsField::AiEnabled => {
+                app.settings.enabled = !app.settings.enabled;
+                persist_settings(app);
+                rebuild_ai(app);
+            }
+            SettingsField::Model => {
+                cycle_model(app, true);
+            }
+            _ => {}
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn cycle_model(app: &mut App, forward: bool) {
+    let current_idx = MODEL_OPTIONS
+        .iter()
+        .position(|&m| m == app.settings.model)
+        .unwrap_or(0);
+    let next = if forward {
+        (current_idx + 1) % MODEL_OPTIONS.len()
+    } else if current_idx == 0 {
+        MODEL_OPTIONS.len() - 1
+    } else {
+        current_idx - 1
+    };
+    app.settings.model = MODEL_OPTIONS[next].to_string();
+    persist_settings(app);
+    rebuild_ai(app);
+}
+
+fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.settings_editing = false;
+        }
+        KeyCode::Enter => {
+            match app.settings_field {
+                SettingsField::ApiKey => app.settings.api_key = app.settings_buf.clone(),
+                SettingsField::Model => app.settings.model = app.settings_buf.clone(),
+                SettingsField::ApiUrl => app.settings.api_url = app.settings_buf.clone(),
+                SettingsField::Timeout => {
+                    if let Ok(secs) = app.settings_buf.parse::<u64>() {
+                        app.settings.timeout_secs = secs;
+                    }
+                }
+                _ => {}
+            }
+            app.settings_editing = false;
+            persist_settings(app);
+            rebuild_ai(app);
+        }
+        KeyCode::Backspace => {
+            app.settings_buf.pop();
+        }
+        KeyCode::Char(ch) => {
+            app.settings_buf.push(ch);
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn poll_ai(app: &mut App) -> bool {
@@ -1061,45 +1388,71 @@ fn render(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         return Ok(());
     }
 
-    render_tabs(stdout, app)?;
+    render_tabs(stdout, app, cols)?;
 
     match app.tab {
         Tab::Default => render_default_tab(stdout, app, cols, rows)?,
         Tab::Timeline => render_timeline_tab(stdout, app, cols, rows)?,
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
+        Tab::Settings => render_settings_tab(stdout, app, cols, rows)?,
     }
 
     if app.focus == Focus::Edit {
         render_edit_overlay(stdout, app, cols, rows)?;
     }
 
+    if app.confirm_delete_id.is_some() {
+        render_delete_confirm(stdout, app, cols, rows)?;
+    }
+
     stdout.flush()?;
     Ok(())
 }
 
-fn render_tabs(stdout: &mut Stdout, app: &App) -> io::Result<()> {
-    let mut x: u16 = 2;
+fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let (x_margin, _) = choose_layout(width, 3);
+    let mut x: u16 = x_margin as u16;
+    let tabs_focused = app.focus == Focus::Tabs;
     for (tab, label) in [
-        (Tab::Default, "1 Default"),
+        (Tab::Default, "1 Buckets"),
         (Tab::Timeline, "2 Timeline"),
         (Tab::Kanban, "3 Kanban"),
+        (Tab::Settings, "4 Settings"),
     ]
     .iter()
     {
         let is_active = *tab == app.tab;
-        let rendered = format!("[{}]", label);
-        queue!(stdout, MoveTo(x, 0))?;
-        if is_active {
+        let rendered = format!(" {} ", label);
+        queue!(stdout, MoveTo(x, 1))?;
+        if is_active && tabs_focused {
+            // Inverted highlight when tab bar is focused.
             queue!(
                 stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                SetAttribute(Attribute::Bold),
+                Print(&rendered),
+                SetAttribute(Attribute::Reset),
+                ResetColor
+            )?;
+        } else if is_active {
+            queue!(
+                stdout,
+                SetAttribute(Attribute::Bold),
                 SetAttribute(Attribute::Underlined),
                 Print(&rendered),
                 SetAttribute(Attribute::Reset)
             )?;
         } else {
-            queue!(stdout, Print(&rendered))?;
+            queue!(
+                stdout,
+                SetAttribute(Attribute::Bold),
+                Print(&rendered),
+                SetAttribute(Attribute::Reset)
+            )?;
         }
-        x += rendered.len() as u16 + 1;
+        x += rendered.width() as u16 + 2;
     }
     Ok(())
 }
@@ -1109,9 +1462,11 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     let (x_margin, gap) = choose_layout(width, 3);
 
     // Top padding below the tabs row.
-    let y_body_top = 2u16;
-    let y_status = rows.saturating_sub(3);
-    let y_input = rows.saturating_sub(2);
+    let y_body_top = 3u16;
+    let y_status = rows.saturating_sub(5);
+    let y_sep_top = rows.saturating_sub(4);
+    let y_input = rows.saturating_sub(3);
+    let y_sep_bottom = rows.saturating_sub(2);
     let y_help = rows.saturating_sub(1);
 
     let x_input = x_margin as u16;
@@ -1148,7 +1503,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     }
 
     let y_cards_start = y_body_top + 3;
-    let cards_area_height = y_input.saturating_sub(y_cards_start) as usize;
+    let cards_area_height = y_status.saturating_sub(y_cards_start) as usize;
     let visible = visible_cards(cards_area_height).max(1);
 
     for (i, bucket) in Bucket::ALL.iter().enumerate() {
@@ -1163,16 +1518,26 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         )?;
     }
 
-    // Status
+    // Status (above separator).
     if let Some(status) = &app.status {
         queue!(
             stdout,
             MoveTo(x_input, y_status),
             SetForegroundColor(Color::DarkGrey),
-            Print(clamp_text(status, width.saturating_sub(x_margin * 2))),
+            Print(clamp_text(status, content_width)),
             ResetColor
         )?;
     }
+
+    // Separator above input.
+    let sep = "─".repeat(content_width);
+    queue!(
+        stdout,
+        MoveTo(x_input, y_sep_top),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&sep),
+        ResetColor
+    )?;
 
     // Input
     let prompt = "› ";
@@ -1188,7 +1553,9 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     queue!(stdout, MoveTo(x_input, y_input))?;
     match app.focus {
         Focus::Input => queue!(stdout, SetForegroundColor(Color::White))?,
-        Focus::Board | Focus::Edit => queue!(stdout, SetForegroundColor(Color::DarkGrey))?,
+        Focus::Tabs | Focus::Board | Focus::Edit => {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?
+        }
     };
     queue!(stdout, Print(prompt))?;
 
@@ -1206,14 +1573,24 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         queue!(stdout, Print(&shown), ResetColor)?;
     }
 
+    // Separator below input.
+    queue!(
+        stdout,
+        MoveTo(x_input, y_sep_bottom),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&sep),
+        ResetColor
+    )?;
+
     // Help
     queue!(
         stdout,
         MoveTo(x_input, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print(
-            "tab/i focus input • esc board • ↑/↓/←/→ (or hjkl) • p advance • P back • 1/2/3 tabs • q quit"
-        ),
+        Print(clamp_text(
+            "tab/i input • esc board • ↑/↓/←/→ navigate • p advance • 1/2/3 tabs • exit quits",
+            content_width,
+        )),
         ResetColor
     )?;
 
@@ -1340,7 +1717,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 
     queue!(
         stdout,
-        MoveTo(x, 2),
+        MoveTo(x, 3),
         SetForegroundColor(Color::DarkGrey),
         Print("Timeline (sorted by due date)."),
         ResetColor
@@ -1354,7 +1731,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         (None, None) => b.created_at.cmp(&a.created_at),
     });
 
-    let list_top = 4u16;
+    let list_top = 5u16;
     let list_height = rows.saturating_sub(list_top + 2) as usize;
 
     for (i, task) in tasks.iter().take(list_height).enumerate() {
@@ -1381,7 +1758,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("1 default • 3 kanban • q quit"),
+        Print("1 buckets • 3 kanban • q quit"),
         ResetColor
     )?;
 
@@ -1397,7 +1774,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
 
     queue!(
         stdout,
-        MoveTo(x, 2),
+        MoveTo(x, 3),
         SetForegroundColor(Color::DarkGrey),
         Print("Kanban (grouped by progress)."),
         ResetColor
@@ -1415,7 +1792,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
     for (i, stage) in Progress::ALL.iter().enumerate() {
         let x = col_x[i] as u16;
         let is_active_col = *stage == app.kanban_stage;
-        queue!(stdout, MoveTo(x, 4))?;
+        queue!(stdout, MoveTo(x, 5))?;
         if is_active_col {
             queue!(
                 stdout,
@@ -1435,7 +1812,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
 
         let ids = kanban_task_ids(&app.tasks, *stage);
 
-        let list_top = 6u16;
+        let list_top = 7u16;
         let list_height = rows.saturating_sub(list_top + 2) as usize;
 
         for (row, id) in ids.iter().take(list_height).enumerate() {
@@ -1462,10 +1839,226 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
         Print(
-            "←/→ (or h/l) columns • ↑/↓ (or j/k) select • p advance • P back • e edit • 1/2 tabs • q quit"
+            "←/→ columns • ↑/↓ select • p advance • P back • e edit • 1/2 tabs • q quit"
         ),
         ResetColor
     )?;
+
+    Ok(())
+}
+
+fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let (x_margin, _) = choose_layout(width, 1);
+    let x = x_margin as u16;
+    let content_width = width.saturating_sub(x_margin * 2);
+    let y_help = rows.saturating_sub(1);
+
+    queue!(
+        stdout,
+        MoveTo(x, 3),
+        SetAttribute(Attribute::Bold),
+        Print(" Settings"),
+        SetAttribute(Attribute::Reset)
+    )?;
+
+    let label_w = 16usize;
+    let value_w = content_width.saturating_sub(label_w + 2);
+
+    for (i, field) in SettingsField::ALL.iter().enumerate() {
+        let y = 5 + i as u16;
+        let is_current = *field == app.settings_field;
+
+        let value = match field {
+            SettingsField::AiEnabled => {
+                if app.settings.enabled {
+                    "On".to_string()
+                } else {
+                    "Off".to_string()
+                }
+            }
+            SettingsField::ApiKey => mask_api_key(&app.settings.api_key),
+            SettingsField::Model => {
+                if app.settings.model.is_empty() {
+                    "(default)".to_string()
+                } else {
+                    app.settings.model.clone()
+                }
+            }
+            SettingsField::ApiUrl => {
+                if app.settings.api_url.is_empty() {
+                    "(default)".to_string()
+                } else {
+                    app.settings.api_url.clone()
+                }
+            }
+            SettingsField::Timeout => format!("{}s", app.settings.timeout_secs),
+        };
+
+        let show_value = if is_current && app.settings_editing {
+            format!("{}\u{258f}", app.settings_buf)
+        } else if is_current
+            && matches!(field, SettingsField::AiEnabled | SettingsField::Model)
+        {
+            format!("\u{25c2} {} \u{25b8}", value)
+        } else {
+            value
+        };
+
+        queue!(stdout, MoveTo(x, y))?;
+        if is_current {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White)
+            )?;
+        }
+
+        let label = format!(" {:<width$}", field.label(), width = label_w);
+        let row_text = format!("{}{}", label, clamp_text(&show_value, value_w));
+        queue!(
+            stdout,
+            Print(pad_to_width(
+                &clamp_text(&row_text, content_width),
+                content_width
+            )),
+            ResetColor
+        )?;
+    }
+
+    // AI status.
+    let status_y = 5 + SettingsField::ALL.len() as u16 + 1;
+    let ai_status = if app.ai.is_some() {
+        "AI active \u{2713}"
+    } else if !app.settings.enabled {
+        "AI disabled"
+    } else if app.settings.api_key.trim().is_empty() {
+        "No API key configured"
+    } else {
+        "AI inactive"
+    };
+    queue!(
+        stdout,
+        MoveTo(x, status_y),
+        SetForegroundColor(Color::DarkGrey),
+        Print(format!(" {}", ai_status)),
+        ResetColor
+    )?;
+
+    // Cursor.
+    if app.settings_editing {
+        let field_idx = SettingsField::ALL
+            .iter()
+            .position(|f| *f == app.settings_field)
+            .unwrap_or(0);
+        let cy = 5 + field_idx as u16;
+        let cx = x as usize + 1 + label_w + app.settings_buf.width();
+        queue!(
+            stdout,
+            MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
+            Show
+        )?;
+    } else {
+        queue!(stdout, Hide)?;
+    }
+
+    // Help.
+    let help = if app.settings_editing {
+        "enter save \u{2022} esc cancel"
+    } else {
+        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} 1/2/3 tabs \u{2022} q quit"
+    };
+    queue!(
+        stdout,
+        MoveTo(x, y_help),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, content_width)),
+        ResetColor
+    )?;
+
+    Ok(())
+}
+
+fn mask_api_key(key: &str) -> String {
+    if key.is_empty() {
+        return "(not set)".to_string();
+    }
+    if key.len() <= 4 {
+        return "\u{2022}\u{2022}\u{2022}\u{2022}".to_string();
+    }
+    let visible = &key[key.len() - 4..];
+    format!("\u{2022}\u{2022}\u{2022}\u{2022}{}", visible)
+}
+
+fn render_delete_confirm(
+    stdout: &mut Stdout,
+    app: &App,
+    cols: u16,
+    rows: u16,
+) -> io::Result<()> {
+    let Some(id) = app.confirm_delete_id else {
+        return Ok(());
+    };
+    let title = app
+        .tasks
+        .iter()
+        .find(|t| t.id == id)
+        .map(|t| t.title.as_str())
+        .unwrap_or("Unknown");
+
+    let box_width = (cols as usize).min(50).max(30);
+    let box_height = 5u16;
+    let x0 = (cols.saturating_sub(box_width as u16)) / 2;
+    let y0 = (rows.saturating_sub(box_height)) / 2;
+
+    // Clear overlay area.
+    for dy in 0..box_height {
+        queue!(
+            stdout,
+            MoveTo(x0, y0 + dy),
+            Print(pad_to_width("", box_width))
+        )?;
+    }
+
+    // Border top.
+    let border_fill: String = "─".repeat(box_width.saturating_sub(14));
+    queue!(
+        stdout,
+        MoveTo(x0, y0),
+        SetForegroundColor(Color::Red),
+        Print(clamp_text(
+            &format!("┌─ Delete? ─{} ", border_fill),
+            box_width,
+        )),
+        ResetColor
+    )?;
+
+    // Task title.
+    let inner_x = x0 + 2;
+    let inner_w = box_width.saturating_sub(4);
+    let msg = format!(
+        "Delete \"{}\"?",
+        clamp_text(title, inner_w.saturating_sub(10))
+    );
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + 2),
+        SetForegroundColor(Color::White),
+        Print(clamp_text(&msg, inner_w)),
+        ResetColor
+    )?;
+
+    // Help line.
+    let help = "enter confirm \u{2022} esc cancel";
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + box_height - 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, inner_w)),
+        ResetColor
+    )?;
+
+    queue!(stdout, Hide)?;
 
     Ok(())
 }

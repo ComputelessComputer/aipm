@@ -10,6 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::model::{Bucket, Priority};
+use crate::storage::AiSettings;
 
 #[derive(Debug, Clone)]
 pub struct ContextTask {
@@ -60,46 +61,40 @@ struct OpenAiConfig {
 }
 
 impl AiRuntime {
-    pub fn from_env() -> Option<AiRuntime> {
-        let mode = env::var("AIPM_AI").ok();
-        if let Some(value) = mode.as_deref() {
-            if is_falsy(value) {
-                return None;
-            }
+    pub fn from_settings(settings: &AiSettings) -> Option<AiRuntime> {
+        if !settings.enabled {
+            return None;
         }
 
-        // Default to "auto": enable if OPENAI_API_KEY is set.
-        let key = env::var("OPENAI_API_KEY").ok()?;
+        let key = if !settings.api_key.trim().is_empty() {
+            settings.api_key.clone()
+        } else {
+            env::var("OPENAI_API_KEY").ok()?
+        };
 
-        if let Some(value) = mode.as_deref() {
-            let lower = value.trim().to_ascii_lowercase();
-            if !lower.is_empty()
-                && lower != "auto"
-                && lower != "on"
-                && lower != "true"
-                && lower != "1"
-            {
-                if lower != "openai" {
-                    return None;
-                }
-            }
-        }
+        let api_url = if !settings.api_url.trim().is_empty() {
+            settings.api_url.clone()
+        } else {
+            env::var("AIPM_OPENAI_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string())
+        };
 
-        let api_url = env::var("AIPM_OPENAI_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
+        let model = if !settings.model.trim().is_empty() {
+            settings.model.clone()
+        } else {
+            env::var("AIPM_OPENAI_MODEL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "gpt-5.2-chat-latest".to_string())
+        };
 
-        let model = env::var("AIPM_OPENAI_MODEL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "gpt-4o-mini".to_string());
-
-        let timeout = env::var("AIPM_OPENAI_TIMEOUT_SECS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(Duration::from_secs)
-            .unwrap_or_else(|| Duration::from_secs(30));
+        let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
+            settings.timeout_secs
+        } else {
+            30
+        });
 
         let cfg = OpenAiConfig {
             api_url,
@@ -127,13 +122,6 @@ impl AiRuntime {
         }
         out
     }
-}
-
-fn is_falsy(input: &str) -> bool {
-    matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "off" | "none" | "disable" | "disabled"
-    )
 }
 
 fn worker_loop(cfg: OpenAiConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResult>) {
