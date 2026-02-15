@@ -34,6 +34,39 @@ enum Tab {
 enum Focus {
     Board,
     Input,
+    Edit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditField {
+    Title,
+    Description,
+    Bucket,
+    Progress,
+    Priority,
+    DueDate,
+}
+
+impl EditField {
+    const ALL: [EditField; 6] = [
+        EditField::Title,
+        EditField::Description,
+        EditField::Bucket,
+        EditField::Progress,
+        EditField::Priority,
+        EditField::DueDate,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            EditField::Title => "Title",
+            EditField::Description => "Description",
+            EditField::Bucket => "Bucket",
+            EditField::Progress => "Progress",
+            EditField::Priority => "Priority",
+            EditField::DueDate => "Due date",
+        }
+    }
 }
 
 struct App {
@@ -52,6 +85,15 @@ struct App {
 
     input: String,
     status: Option<String>,
+
+    edit_task_id: Option<Uuid>,
+    edit_field: EditField,
+    edit_buf: String,
+    editing_text: bool,
+
+    kanban_stage: Progress,
+    kanban_selected: Option<Uuid>,
+    kanban_scroll: [usize; 4],
 }
 
 struct TerminalGuard;
@@ -108,6 +150,13 @@ fn main() -> io::Result<()> {
         scroll_admin: 0,
         input: String::new(),
         status: None,
+        edit_task_id: None,
+        edit_field: EditField::Title,
+        edit_buf: String::new(),
+        editing_text: false,
+        kanban_stage: Progress::Backlog,
+        kanban_selected: None,
+        kanban_scroll: [0; 4],
     };
 
     ensure_default_selection(&mut app);
@@ -151,39 +200,50 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
-    // Global quit
-    match key.code {
-        KeyCode::Char('q') | KeyCode::Esc if app.focus == Focus::Board => return Ok(true),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-        _ => {}
+    // Ctrl-C always quits.
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(true);
     }
 
-    // Global tab switching
-    match key.code {
-        KeyCode::Char('1') => {
-            app.tab = Tab::Default;
-            app.focus = Focus::Input;
-            app.status = None;
-            return Ok(false);
+    // Edit overlay intercepts all keys.
+    if app.focus == Focus::Edit {
+        return handle_edit_key(app, key);
+    }
+
+    // Global quit from board focus.
+    if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) && app.focus == Focus::Board {
+        return Ok(true);
+    }
+
+    // Global tab switching (not while typing in input).
+    if app.focus != Focus::Input {
+        match key.code {
+            KeyCode::Char('1') => {
+                app.tab = Tab::Default;
+                app.focus = Focus::Input;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('2') => {
+                app.tab = Tab::Timeline;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('3') => {
+                app.tab = Tab::Kanban;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
+            _ => {}
         }
-        KeyCode::Char('2') => {
-            app.tab = Tab::Timeline;
-            app.focus = Focus::Board;
-            app.status = None;
-            return Ok(false);
-        }
-        KeyCode::Char('3') => {
-            app.tab = Tab::Kanban;
-            app.focus = Focus::Board;
-            app.status = None;
-            return Ok(false);
-        }
-        _ => {}
     }
 
     match app.tab {
         Tab::Default => handle_default_tab_key(app, key),
-        Tab::Timeline | Tab::Kanban => handle_readonly_tab_key(app, key),
+        Tab::Timeline => handle_readonly_tab_key(app, key),
+        Tab::Kanban => handle_kanban_key(app, key),
     }
 }
 
@@ -203,6 +263,7 @@ fn handle_default_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match app.focus {
         Focus::Input => handle_input_key(app, key),
         Focus::Board => handle_board_key(app, key),
+        Focus::Edit => handle_edit_key(app, key),
     }
 }
 
@@ -286,6 +347,14 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.focus = Focus::Input;
             return Ok(false);
         }
+        KeyCode::Enter | KeyCode::Char('e') => {
+            open_edit(app);
+            return Ok(false);
+        }
+        KeyCode::Char('d') | KeyCode::Char('x') => {
+            delete_selected(app);
+            return Ok(false);
+        }
         _ => {}
     }
 
@@ -344,6 +413,392 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 
     Ok(false)
+}
+
+fn open_edit(app: &mut App) {
+    let Some(id) = app.selected_task_id else {
+        return;
+    };
+    let Some(task) = app.tasks.iter().find(|t| t.id == id) else {
+        return;
+    };
+
+    app.edit_task_id = Some(id);
+    app.edit_field = EditField::Title;
+    app.edit_buf = task.title.clone();
+    app.editing_text = false;
+    app.focus = Focus::Edit;
+}
+
+fn close_edit(app: &mut App) {
+    app.edit_task_id = None;
+    app.editing_text = false;
+    app.focus = Focus::Board;
+}
+
+fn delete_selected(app: &mut App) {
+    let Some(id) = app.selected_task_id else {
+        return;
+    };
+    if let Some(pos) = app.tasks.iter().position(|t| t.id == id) {
+        let title = app.tasks[pos].title.clone();
+        app.tasks.remove(pos);
+        app.status = Some(format!("Deleted: {title}"));
+        ensure_default_selection(app);
+        persist(app);
+    }
+}
+
+fn load_edit_buf(app: &mut App) {
+    let Some(id) = app.edit_task_id else {
+        return;
+    };
+    let Some(task) = app.tasks.iter().find(|t| t.id == id) else {
+        return;
+    };
+    app.edit_buf = match app.edit_field {
+        EditField::Title => task.title.clone(),
+        EditField::Description => task.description.clone(),
+        EditField::Bucket => task.bucket.title().to_string(),
+        EditField::Progress => task.progress.title().to_string(),
+        EditField::Priority => task.priority.title().to_string(),
+        EditField::DueDate => task
+            .due_date
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
+    };
+}
+
+fn commit_edit_buf(app: &mut App) {
+    let Some(id) = app.edit_task_id else {
+        return;
+    };
+    let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) else {
+        return;
+    };
+    let now = Utc::now();
+
+    match app.edit_field {
+        EditField::Title => {
+            let trimmed = app.edit_buf.trim().to_string();
+            if !trimmed.is_empty() {
+                task.title = trimmed;
+                task.updated_at = now;
+            }
+        }
+        EditField::Description => {
+            task.description = app.edit_buf.trim().to_string();
+            task.updated_at = now;
+        }
+        EditField::Bucket => {
+            if let Some(b) = match app.edit_buf.trim().to_ascii_lowercase().as_str() {
+                "team" => Some(Bucket::Team),
+                "john" | "john-only" => Some(Bucket::John),
+                "admin" => Some(Bucket::Admin),
+                _ => None,
+            } {
+                task.bucket = b;
+                task.updated_at = now;
+            }
+        }
+        EditField::Progress => {
+            if let Some(p) = match app.edit_buf.trim().to_ascii_lowercase().as_str() {
+                "backlog" => Some(Progress::Backlog),
+                "todo" => Some(Progress::Todo),
+                "in progress" | "inprogress" | "in-progress" => Some(Progress::InProgress),
+                "done" => Some(Progress::Done),
+                _ => None,
+            } {
+                task.set_progress(p, now);
+            }
+        }
+        EditField::Priority => {
+            if let Some(p) = match app.edit_buf.trim().to_ascii_lowercase().as_str() {
+                "low" => Some(crate::model::Priority::Low),
+                "med" | "medium" => Some(crate::model::Priority::Medium),
+                "high" => Some(crate::model::Priority::High),
+                "crit" | "critical" => Some(crate::model::Priority::Critical),
+                _ => None,
+            } {
+                task.priority = p;
+                task.updated_at = now;
+            }
+        }
+        EditField::DueDate => {
+            let s = app.edit_buf.trim();
+            if s.is_empty() {
+                task.due_date = None;
+                task.updated_at = now;
+            } else if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                task.due_date = Some(date);
+                task.updated_at = now;
+            }
+        }
+    }
+
+    persist(app);
+}
+
+fn cycle_edit_field_value(app: &mut App, forward: bool) {
+    let Some(id) = app.edit_task_id else {
+        return;
+    };
+    let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) else {
+        return;
+    };
+    let now = Utc::now();
+
+    match app.edit_field {
+        EditField::Bucket => {
+            task.bucket = if forward {
+                match task.bucket {
+                    Bucket::Team => Bucket::John,
+                    Bucket::John => Bucket::Admin,
+                    Bucket::Admin => Bucket::Team,
+                }
+            } else {
+                match task.bucket {
+                    Bucket::Team => Bucket::Admin,
+                    Bucket::John => Bucket::Team,
+                    Bucket::Admin => Bucket::John,
+                }
+            };
+            task.updated_at = now;
+        }
+        EditField::Progress => {
+            let next = if forward {
+                task.progress.advance()
+            } else {
+                task.progress.retreat()
+            };
+            task.set_progress(next, now);
+        }
+        EditField::Priority => {
+            task.priority = if forward {
+                match task.priority {
+                    crate::model::Priority::Low => crate::model::Priority::Medium,
+                    crate::model::Priority::Medium => crate::model::Priority::High,
+                    crate::model::Priority::High => crate::model::Priority::Critical,
+                    crate::model::Priority::Critical => crate::model::Priority::Low,
+                }
+            } else {
+                match task.priority {
+                    crate::model::Priority::Low => crate::model::Priority::Critical,
+                    crate::model::Priority::Medium => crate::model::Priority::Low,
+                    crate::model::Priority::High => crate::model::Priority::Medium,
+                    crate::model::Priority::Critical => crate::model::Priority::High,
+                }
+            };
+            task.updated_at = now;
+        }
+        _ => {}
+    }
+
+    persist(app);
+    load_edit_buf(app);
+}
+
+fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    if app.editing_text {
+        match key.code {
+            KeyCode::Esc => {
+                app.editing_text = false;
+                load_edit_buf(app);
+            }
+            KeyCode::Enter => {
+                commit_edit_buf(app);
+                app.editing_text = false;
+                load_edit_buf(app);
+            }
+            KeyCode::Backspace => {
+                app.edit_buf.pop();
+            }
+            KeyCode::Char(ch) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.edit_buf.push(ch);
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            close_edit(app);
+            ensure_default_selection(app);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let idx = EditField::ALL
+                .iter()
+                .position(|f| *f == app.edit_field)
+                .unwrap_or(0);
+            let next = if idx == 0 {
+                EditField::ALL.len() - 1
+            } else {
+                idx - 1
+            };
+            app.edit_field = EditField::ALL[next];
+            load_edit_buf(app);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let idx = EditField::ALL
+                .iter()
+                .position(|f| *f == app.edit_field)
+                .unwrap_or(0);
+            let next = (idx + 1) % EditField::ALL.len();
+            app.edit_field = EditField::ALL[next];
+            load_edit_buf(app);
+        }
+        KeyCode::Enter | KeyCode::Char('e') => match app.edit_field {
+            EditField::Title | EditField::Description | EditField::DueDate => {
+                load_edit_buf(app);
+                app.editing_text = true;
+            }
+            EditField::Bucket | EditField::Progress | EditField::Priority => {
+                cycle_edit_field_value(app, true);
+            }
+        },
+        KeyCode::Left | KeyCode::Char('h') => match app.edit_field {
+            EditField::Bucket | EditField::Progress | EditField::Priority => {
+                cycle_edit_field_value(app, false);
+            }
+            _ => {}
+        },
+        KeyCode::Right | KeyCode::Char('l') => match app.edit_field {
+            EditField::Bucket | EditField::Progress | EditField::Priority => {
+                cycle_edit_field_value(app, true);
+            }
+            _ => {}
+        },
+        KeyCode::Char('d') | KeyCode::Char('x') => {
+            let id = app.edit_task_id;
+            close_edit(app);
+            if let Some(task_id) = id {
+                app.selected_task_id = Some(task_id);
+                delete_selected(app);
+            }
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
+        KeyCode::Char('i') => {
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            return Ok(false);
+        }
+        _ => {}
+    }
+
+    match key.code {
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.kanban_stage = match app.kanban_stage {
+                Progress::Backlog => Progress::Done,
+                Progress::Todo => Progress::Backlog,
+                Progress::InProgress => Progress::Todo,
+                Progress::Done => Progress::InProgress,
+            };
+            ensure_kanban_selection(app);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            app.kanban_stage = match app.kanban_stage {
+                Progress::Backlog => Progress::Todo,
+                Progress::Todo => Progress::InProgress,
+                Progress::InProgress => Progress::Done,
+                Progress::Done => Progress::Backlog,
+            };
+            ensure_kanban_selection(app);
+        }
+        KeyCode::Up | KeyCode::Char('k') => move_kanban_selection(app, -1),
+        KeyCode::Down | KeyCode::Char('j') => move_kanban_selection(app, 1),
+        KeyCode::Char('p') | KeyCode::Char(' ') => {
+            if let Some(id) = app.kanban_selected {
+                let now = Utc::now();
+                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                    task.advance_progress(now);
+                    persist(app);
+                    ensure_kanban_selection(app);
+                }
+            }
+        }
+        KeyCode::Char('P') => {
+            if let Some(id) = app.kanban_selected {
+                let now = Utc::now();
+                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                    task.retreat_progress(now);
+                    persist(app);
+                    ensure_kanban_selection(app);
+                }
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('e') => {
+            if let Some(id) = app.kanban_selected {
+                app.selected_task_id = Some(id);
+                let task = app.tasks.iter().find(|t| t.id == id);
+                if let Some(t) = task {
+                    app.edit_task_id = Some(id);
+                    app.edit_field = EditField::Title;
+                    app.edit_buf = t.title.clone();
+                    app.editing_text = false;
+                    app.focus = Focus::Edit;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn kanban_task_ids(tasks: &[Task], stage: Progress) -> Vec<Uuid> {
+    let mut ids: Vec<(usize, Uuid)> = tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.progress == stage)
+        .map(|(i, t)| (i, t.id))
+        .collect();
+    ids.sort_by(|a, b| tasks[b.0].created_at.cmp(&tasks[a.0].created_at));
+    ids.into_iter().map(|(_, id)| id).collect()
+}
+
+fn ensure_kanban_selection(app: &mut App) {
+    let ids = kanban_task_ids(&app.tasks, app.kanban_stage);
+    if ids.is_empty() {
+        app.kanban_selected = None;
+        return;
+    }
+    if let Some(current) = app.kanban_selected {
+        if ids.contains(&current) {
+            return;
+        }
+    }
+    app.kanban_selected = Some(ids[0]);
+}
+
+fn move_kanban_selection(app: &mut App, delta: i32) {
+    let ids = kanban_task_ids(&app.tasks, app.kanban_stage);
+    if ids.is_empty() {
+        app.kanban_selected = None;
+        return;
+    }
+    let current = app
+        .kanban_selected
+        .and_then(|id| ids.iter().position(|i| *i == id))
+        .unwrap_or(0);
+    let len = ids.len() as i32;
+    let mut next = current as i32 + delta;
+    if next < 0 {
+        next = len - 1;
+    } else if next >= len {
+        next = 0;
+    }
+    app.kanban_selected = Some(ids[next as usize]);
 }
 
 fn persist(app: &mut App) {
@@ -614,6 +1069,10 @@ fn render(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
     }
 
+    if app.focus == Focus::Edit {
+        render_edit_overlay(stdout, app, cols, rows)?;
+    }
+
     stdout.flush()?;
     Ok(())
 }
@@ -729,7 +1188,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     queue!(stdout, MoveTo(x_input, y_input))?;
     match app.focus {
         Focus::Input => queue!(stdout, SetForegroundColor(Color::White))?,
-        Focus::Board => queue!(stdout, SetForegroundColor(Color::DarkGrey))?,
+        Focus::Board | Focus::Edit => queue!(stdout, SetForegroundColor(Color::DarkGrey))?,
     };
     queue!(stdout, Print(prompt))?;
 
@@ -955,27 +1414,46 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
 
     for (i, stage) in Progress::ALL.iter().enumerate() {
         let x = col_x[i] as u16;
-        queue!(
-            stdout,
-            MoveTo(x, 4),
-            SetAttribute(Attribute::Bold),
-            Print(clamp_text(stage.title(), col_width)),
-            SetAttribute(Attribute::Reset)
-        )?;
+        let is_active_col = *stage == app.kanban_stage;
+        queue!(stdout, MoveTo(x, 4))?;
+        if is_active_col {
+            queue!(
+                stdout,
+                SetAttribute(Attribute::Bold),
+                SetAttribute(Attribute::Underlined),
+                Print(clamp_text(stage.title(), col_width)),
+                SetAttribute(Attribute::Reset)
+            )?;
+        } else {
+            queue!(
+                stdout,
+                SetAttribute(Attribute::Bold),
+                Print(clamp_text(stage.title(), col_width)),
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
 
-        let mut tasks: Vec<&Task> = app.tasks.iter().filter(|t| t.progress == *stage).collect();
-        tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let ids = kanban_task_ids(&app.tasks, *stage);
 
         let list_top = 6u16;
         let list_height = rows.saturating_sub(list_top + 2) as usize;
 
-        for (row, task) in tasks.iter().take(list_height).enumerate() {
-            let line = format!("{} · {}", task.bucket.title(), task.title);
-            queue!(
-                stdout,
-                MoveTo(x, list_top + row as u16),
-                Print(clamp_text(&line, col_width))
-            )?;
+        for (row, id) in ids.iter().take(list_height).enumerate() {
+            let task = app.tasks.iter().find(|t| t.id == *id).unwrap();
+            let is_selected = is_active_col && app.kanban_selected == Some(*id);
+            let line = format!(" {} · {}", task.bucket.title(), task.title);
+            queue!(stdout, MoveTo(x, list_top + row as u16))?;
+            if is_selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White),
+                    Print(pad_to_width(&clamp_text(&line, col_width), col_width)),
+                    ResetColor
+                )?;
+            } else {
+                queue!(stdout, Print(clamp_text(&line, col_width)))?;
+            }
         }
     }
 
@@ -983,9 +1461,152 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("1 default • 2 timeline • q quit"),
+        Print(
+            "←/→ (or h/l) columns • ↑/↓ (or j/k) select • p advance • P back • e edit • 1/2 tabs • q quit"
+        ),
         ResetColor
     )?;
+
+    Ok(())
+}
+
+fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let Some(id) = app.edit_task_id else {
+        return Ok(());
+    };
+    let Some(task) = app.tasks.iter().find(|t| t.id == id) else {
+        return Ok(());
+    };
+
+    let box_width = (cols as usize).min(60).max(40);
+    let box_height = 12u16;
+    let x0 = (cols.saturating_sub(box_width as u16)) / 2;
+    let y0 = (rows.saturating_sub(box_height)) / 2;
+
+    // Clear overlay area.
+    for dy in 0..box_height {
+        queue!(
+            stdout,
+            MoveTo(x0, y0 + dy),
+            Print(pad_to_width("", box_width))
+        )?;
+    }
+
+    // Border top.
+    queue!(
+        stdout,
+        MoveTo(x0, y0),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(
+            &format!(
+                "┌─ Edit: {} ",
+                clamp_text(&task.title, box_width.saturating_sub(12))
+            ),
+            box_width
+        )),
+        ResetColor
+    )?;
+
+    let inner_x = x0 + 2;
+    let label_w = 14usize;
+    let value_w = box_width.saturating_sub(label_w + 4);
+
+    let fields = EditField::ALL;
+    for (i, field) in fields.iter().enumerate() {
+        let y = y0 + 2 + i as u16;
+        let is_current = *field == app.edit_field;
+
+        let value = match field {
+            EditField::Title => task.title.clone(),
+            EditField::Description => {
+                if task.description.trim().is_empty() {
+                    "—".to_string()
+                } else {
+                    task.description.clone()
+                }
+            }
+            EditField::Bucket => task.bucket.title().to_string(),
+            EditField::Progress => {
+                format!(
+                    "{} {}",
+                    progress_gauge(task.progress),
+                    task.progress.title()
+                )
+            }
+            EditField::Priority => task.priority.title().to_string(),
+            EditField::DueDate => task
+                .due_date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "—".to_string()),
+        };
+
+        let show_value = if is_current && app.editing_text {
+            format!("{}▏", app.edit_buf)
+        } else if is_current
+            && matches!(
+                field,
+                EditField::Bucket | EditField::Progress | EditField::Priority
+            )
+        {
+            format!("◂ {} ▸", value)
+        } else {
+            value
+        };
+
+        queue!(stdout, MoveTo(inner_x, y))?;
+        if is_current {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White)
+            )?;
+        } else {
+            queue!(stdout, SetForegroundColor(Color::White))?;
+        }
+
+        let label = format!("{:<width$}", field.label(), width = label_w);
+        let row_text = format!("{}{}", label, clamp_text(&show_value, value_w));
+        queue!(
+            stdout,
+            Print(pad_to_width(
+                &clamp_text(&row_text, box_width.saturating_sub(4)),
+                box_width.saturating_sub(4)
+            )),
+            ResetColor
+        )?;
+    }
+
+    // Help line.
+    let help_y = y0 + box_height - 1;
+    let help = if app.editing_text {
+        "enter save • esc cancel"
+    } else {
+        "↑/↓ field • enter/e edit • ←/→ cycle • d delete • esc close"
+    };
+    queue!(
+        stdout,
+        MoveTo(inner_x, help_y),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, box_width.saturating_sub(4))),
+        ResetColor
+    )?;
+
+    // Cursor in text editing mode.
+    if app.editing_text {
+        let field_idx = EditField::ALL
+            .iter()
+            .position(|f| *f == app.edit_field)
+            .unwrap_or(0);
+        let cy = y0 + 2 + field_idx as u16;
+        let cx = inner_x as usize + label_w + app.edit_buf.width();
+        queue!(
+            stdout,
+            MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
+            Show
+        )?;
+    } else {
+        queue!(stdout, Hide)?;
+    }
 
     Ok(())
 }
