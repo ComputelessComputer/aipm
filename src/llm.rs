@@ -162,8 +162,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
-        ],
-        "temperature": 0.2
+        ]
     });
 
     let resp = ureq::post(&cfg.api_url)

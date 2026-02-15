@@ -3,7 +3,6 @@ mod llm;
 mod model;
 mod storage;
 
-use std::cmp::Ordering;
 use std::io::{self, Stdout, Write};
 use std::time::Duration;
 
@@ -155,6 +154,9 @@ struct App {
     edit_buf: String,
     editing_text: bool,
 
+    timeline_selected: usize,
+    timeline_scroll: usize,
+
     kanban_stage: Progress,
     kanban_selected: Option<Uuid>,
     kanban_scroll: [usize; 4],
@@ -229,6 +231,8 @@ fn main() -> io::Result<()> {
         edit_field: EditField::Title,
         edit_buf: String::new(),
         editing_text: false,
+        timeline_selected: 0,
+        timeline_scroll: 0,
         kanban_stage: Progress::Backlog,
         kanban_selected: None,
         kanban_scroll: [0; 4],
@@ -344,7 +348,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
     match app.tab {
         Tab::Default => handle_default_tab_key(app, key),
-        Tab::Timeline => handle_readonly_tab_key(app, key),
+        Tab::Timeline => handle_timeline_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
         Tab::Settings => handle_settings_key(app, key),
     }
@@ -359,7 +363,7 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Right | KeyCode::Char('l') => {
             app.tab = app.tab.next();
         }
-        KeyCode::Enter => {
+        KeyCode::Enter | KeyCode::Down | KeyCode::Char('j') => {
             app.focus = match app.tab {
                 Tab::Default => Focus::Input,
                 _ => Focus::Board,
@@ -392,20 +396,70 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     Ok(false)
 }
 
-fn handle_readonly_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+fn sorted_timeline_tasks(tasks: &[Task]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..tasks.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let a_start = tasks[a]
+            .start_date
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| tasks[a].created_at.date_naive());
+        let b_start = tasks[b]
+            .start_date
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| tasks[b].created_at.date_naive());
+        a_start.cmp(&b_start)
+    });
+    indices
+}
+
+fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => Ok(true),
+        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
-            Ok(false)
+            return Ok(false);
         }
         KeyCode::Char('i') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
-            Ok(false)
+            return Ok(false);
         }
-        _ => Ok(false),
+        KeyCode::Enter | KeyCode::Char('e') => {
+            let indices = sorted_timeline_tasks(&app.tasks);
+            if let Some(&idx) = indices.get(app.timeline_selected) {
+                let task = &app.tasks[idx];
+                app.selected_task_id = Some(task.id);
+                app.edit_task_id = Some(task.id);
+                app.edit_field = EditField::Title;
+                app.edit_buf = task.title.clone();
+                app.editing_text = false;
+                app.focus = Focus::Edit;
+            }
+            return Ok(false);
+        }
+        _ => {}
     }
+
+    let count = app.tasks.len();
+    if count == 0 {
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.timeline_selected == 0 {
+                app.timeline_selected = count - 1;
+            } else {
+                app.timeline_selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.timeline_selected = (app.timeline_selected + 1) % count;
+        }
+        _ => {}
+    }
+
+    Ok(false)
 }
 
 fn handle_default_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
@@ -1405,6 +1459,10 @@ fn render(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         render_delete_confirm(stdout, app, cols, rows)?;
     }
 
+    if app.status.is_some() {
+        render_toast(stdout, app, cols, rows)?;
+    }
+
     stdout.flush()?;
     Ok(())
 }
@@ -1437,19 +1495,19 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
                 ResetColor
             )?;
         } else if is_active {
+            // Subtle indicator when inside tab content.
             queue!(
                 stdout,
                 SetAttribute(Attribute::Bold),
-                SetAttribute(Attribute::Underlined),
                 Print(&rendered),
                 SetAttribute(Attribute::Reset)
             )?;
         } else {
             queue!(
                 stdout,
-                SetAttribute(Attribute::Bold),
+                SetForegroundColor(Color::DarkGrey),
                 Print(&rendered),
-                SetAttribute(Attribute::Reset)
+                ResetColor
             )?;
         }
         x += rendered.width() as u16 + 2;
@@ -1515,17 +1573,6 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
             y_cards_start,
             col_width,
             visible,
-        )?;
-    }
-
-    // Status (above separator).
-    if let Some(status) = &app.status {
-        queue!(
-            stdout,
-            MoveTo(x_input, y_status),
-            SetForegroundColor(Color::DarkGrey),
-            Print(clamp_text(status, content_width)),
-            ResetColor
         )?;
     }
 
@@ -1709,56 +1756,376 @@ fn render_bucket_column(
     Ok(())
 }
 
-fn render_timeline_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
+    use chrono::{Datelike, Duration as ChronoDuration, Local};
+
     let width = cols as usize;
     let (x_margin, _gap) = choose_layout(width, 1);
     let x = x_margin as u16;
+    let content_width = width.saturating_sub(x_margin * 2);
     let y_help = rows.saturating_sub(1);
 
+    // Layout: [label_width] | [gantt_width]
+    let label_width = 24usize.min(content_width / 3);
+    let gantt_width = content_width.saturating_sub(label_width + 3); // 3 for " | "
+
+    // Determine date range (today + 4 weeks by default, expand if tasks go further)
+    let today = Local::now().date_naive();
+    let mut min_date = today;
+    let mut max_date = today + ChronoDuration::days(28);
+
+    for task in &app.tasks {
+        let start = task
+            .start_date
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| task.created_at.date_naive());
+        let end = task.due_date.unwrap_or(start + ChronoDuration::days(7));
+        if start < min_date {
+            min_date = start;
+        }
+        if end > max_date {
+            max_date = end;
+        }
+    }
+
+    let total_days = (max_date - min_date).num_days().max(1) as usize;
+
+    // Header: month labels
+    let header_y = 3u16;
+    let gantt_x = x + label_width as u16 + 3;
+
+    // Draw month markers
+    queue!(stdout, MoveTo(x, header_y))?;
     queue!(
         stdout,
-        MoveTo(x, 3),
+        SetAttribute(Attribute::Bold),
+        Print(pad_to_width("Task", label_width)),
+        SetAttribute(Attribute::Reset),
         SetForegroundColor(Color::DarkGrey),
-        Print("Timeline (sorted by due date)."),
+        Print(" │ ")
+    )?;
+
+    // Generate day markers for the header
+    let mut header_str = String::new();
+    let mut last_month: Option<u32> = None;
+    for i in 0..gantt_width {
+        let day_offset = (i * total_days) / gantt_width;
+        let date = min_date + ChronoDuration::days(day_offset as i64);
+        if last_month != Some(date.month()) {
+            let month_name = match date.month() {
+                1 => "Jan",
+                2 => "Feb",
+                3 => "Mar",
+                4 => "Apr",
+                5 => "May",
+                6 => "Jun",
+                7 => "Jul",
+                8 => "Aug",
+                9 => "Sep",
+                10 => "Oct",
+                11 => "Nov",
+                12 => "Dec",
+                _ => "",
+            };
+            // Only show if there's room
+            if header_str.len() + 3 <= gantt_width {
+                header_str.push_str(month_name);
+            }
+            last_month = Some(date.month());
+        } else if header_str.len() < gantt_width {
+            header_str.push(' ');
+        }
+    }
+    queue!(
+        stdout,
+        Print(clamp_text(&header_str, gantt_width)),
         ResetColor
     )?;
 
-    let mut tasks: Vec<&Task> = app.tasks.iter().collect();
-    tasks.sort_by(|a, b| match (a.due_date, b.due_date) {
-        (Some(da), Some(db)) => da.cmp(&db),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => b.created_at.cmp(&a.created_at),
-    });
+    // Draw today marker position
+    let today_offset = (today - min_date).num_days().max(0) as usize;
+    let today_col = if total_days > 0 {
+        (today_offset * gantt_width) / total_days
+    } else {
+        0
+    };
 
+    // Use sorted_timeline_tasks for consistent ordering with key handler
+    let indices = sorted_timeline_tasks(&app.tasks);
+    let task_count = indices.len();
+
+    // Clamp selection
+    if task_count > 0 {
+        if app.timeline_selected >= task_count {
+            app.timeline_selected = task_count - 1;
+        }
+    } else {
+        app.timeline_selected = 0;
+    }
+
+    // Detail panel at the bottom takes 5 rows (legend_y area)
+    let detail_height = if task_count > 0 { 5u16 } else { 0 };
     let list_top = 5u16;
-    let list_height = rows.saturating_sub(list_top + 2) as usize;
+    let list_bottom = rows.saturating_sub(detail_height + 3); // room for detail + help
+    let list_height = list_bottom.saturating_sub(list_top) as usize;
 
-    for (i, task) in tasks.iter().take(list_height).enumerate() {
-        let due = task
-            .due_date
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "—".to_string());
-        let line = format!(
-            "{}  {:<10}  {:<11}  {:<11}  {}",
-            due,
-            task.bucket.title(),
-            task.progress.title(),
-            task.priority.title(),
+    // Scroll
+    if task_count > 0 {
+        if app.timeline_selected < app.timeline_scroll {
+            app.timeline_scroll = app.timeline_selected;
+        } else if app.timeline_selected >= app.timeline_scroll + list_height {
+            app.timeline_scroll = app.timeline_selected.saturating_sub(list_height.saturating_sub(1));
+        }
+        let max_scroll = task_count.saturating_sub(list_height);
+        app.timeline_scroll = app.timeline_scroll.min(max_scroll);
+    }
+
+    for (vis_row, sorted_pos) in (app.timeline_scroll..task_count)
+        .take(list_height)
+        .enumerate()
+    {
+        let task = &app.tasks[indices[sorted_pos]];
+        let y = list_top + vis_row as u16;
+        let is_selected = sorted_pos == app.timeline_selected;
+
+        // Task label
+        let label = format!(
+            "{} {}",
+            match task.bucket {
+                Bucket::Team => "●",
+                Bucket::John => "◆",
+                Bucket::Admin => "■",
+            },
             task.title
         );
+
+        queue!(stdout, MoveTo(x, y))?;
+        if is_selected {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                Print(pad_to_width(&clamp_text(&label, label_width), label_width)),
+                ResetColor,
+                SetForegroundColor(Color::DarkGrey),
+                Print(" │ "),
+                ResetColor
+            )?;
+        } else {
+            queue!(
+                stdout,
+                Print(clamp_text(&label, label_width)),
+                SetForegroundColor(Color::DarkGrey),
+                Print(" │ "),
+                ResetColor
+            )?;
+        }
+
+        // Calculate bar position
+        let start = task
+            .start_date
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| task.created_at.date_naive());
+        let end = task.due_date.unwrap_or(start + ChronoDuration::days(7));
+
+        let start_offset = (start - min_date).num_days().max(0) as usize;
+        let end_offset = (end - min_date).num_days().max(0) as usize;
+
+        let bar_start = (start_offset * gantt_width) / total_days.max(1);
+        let bar_end = ((end_offset * gantt_width) / total_days.max(1)).max(bar_start + 1);
+
+        // Build bar with start/end date labels
+        let start_label = start.format("%m/%d").to_string();
+        let end_label = end.format("%m/%d").to_string();
+
+        let bar_len = bar_end - bar_start;
+        let both_len = start_label.len() + 1 + end_label.len(); // "MM/DD .... MM/DD"
+
+        // Color based on progress
+        let bar_color = match task.progress {
+            Progress::Done => Color::Green,
+            Progress::InProgress => Color::Yellow,
+            Progress::Todo => Color::Blue,
+            Progress::Backlog => Color::DarkGrey,
+        };
+
+        // Draw the Gantt bar column by column
+        // Pre-build the bar string, then overlay date labels
+        let mut bar_chars: Vec<char> = Vec::with_capacity(gantt_width);
+        for col in 0..gantt_width {
+            if col >= bar_start && col < bar_end {
+                bar_chars.push('█');
+            } else if col == today_col {
+                bar_chars.push('│');
+            } else {
+                bar_chars.push(' ');
+            }
+        }
+
+        // Overlay date labels onto the bar area
+        if bar_len >= both_len + 1 {
+            // Both labels fit inside the bar
+            for (j, ch) in start_label.chars().enumerate() {
+                bar_chars[bar_start + j] = ch;
+            }
+            let end_pos = bar_end - end_label.len();
+            for (j, ch) in end_label.chars().enumerate() {
+                bar_chars[end_pos + j] = ch;
+            }
+        } else if bar_len >= start_label.len() + 1 {
+            // Only start label fits inside
+            for (j, ch) in start_label.chars().enumerate() {
+                bar_chars[bar_start + j] = ch;
+            }
+            // End label after bar if room
+            let after = bar_end + 1;
+            if after + end_label.len() <= gantt_width {
+                for (j, ch) in end_label.chars().enumerate() {
+                    bar_chars[after + j] = ch;
+                }
+            }
+        } else {
+            // Labels outside the bar
+            if bar_start >= start_label.len() + 1 {
+                let before = bar_start - start_label.len() - 1;
+                for (j, ch) in start_label.chars().enumerate() {
+                    bar_chars[before + j] = ch;
+                }
+            }
+            let after = bar_end + 1;
+            if after + end_label.len() <= gantt_width {
+                for (j, ch) in end_label.chars().enumerate() {
+                    bar_chars[after + j] = ch;
+                }
+            }
+        }
+
+        // Render bar: color bar chars, dim date label chars
+        queue!(stdout, MoveTo(gantt_x, y))?;
+        for (col, &ch) in bar_chars.iter().enumerate() {
+            let in_bar = col >= bar_start && col < bar_end;
+            if ch == '█' {
+                queue!(
+                    stdout,
+                    SetForegroundColor(bar_color),
+                    Print('█'),
+                    ResetColor
+                )?;
+            } else if in_bar {
+                // Date label char inside bar: show as inverse
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(bar_color),
+                    Print(ch),
+                    ResetColor
+                )?;
+            } else if ch == '│' {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::DarkGrey),
+                    Print('│'),
+                    ResetColor
+                )?;
+            } else if ch != ' ' {
+                // Date label outside bar
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(ch),
+                    ResetColor
+                )?;
+            } else {
+                queue!(stdout, Print(' '))?;
+            }
+        }
+    }
+
+    if task_count == 0 {
         queue!(
             stdout,
-            MoveTo(x, list_top + i as u16),
-            Print(clamp_text(&line, width.saturating_sub(x_margin * 2)))
+            MoveTo(x, list_top),
+            SetForegroundColor(Color::DarkGrey),
+            Print("No tasks yet. Create some in the Buckets tab."),
+            ResetColor
         )?;
     }
+
+    // Detail panel for selected task
+    if task_count > 0 {
+        let detail_y = list_bottom + 1;
+        let sep = "─".repeat(content_width);
+        queue!(
+            stdout,
+            MoveTo(x, detail_y.saturating_sub(1)),
+            SetForegroundColor(Color::DarkGrey),
+            Print(&sep),
+            ResetColor
+        )?;
+
+        let task = &app.tasks[indices[app.timeline_selected]];
+        let start = task
+            .start_date
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| task.created_at.date_naive());
+        let end = task.due_date.unwrap_or(start + ChronoDuration::days(7));
+        let gauge = progress_gauge(task.progress);
+        let desc = if task.description.trim().is_empty() {
+            "—"
+        } else {
+            task.description.trim()
+        };
+
+        let line1 = format!(
+            "{} │ {} {} │ {} │ {} → {}",
+            task.title,
+            gauge,
+            task.progress.title(),
+            task.priority.title(),
+            start.format("%Y-%m-%d"),
+            end.format("%Y-%m-%d"),
+        );
+        let line2 = format!("  {}", desc);
+
+        queue!(
+            stdout,
+            MoveTo(x, detail_y),
+            SetAttribute(Attribute::Bold),
+            Print(clamp_text(&line1, content_width)),
+            SetAttribute(Attribute::Reset)
+        )?;
+        queue!(
+            stdout,
+            MoveTo(x, detail_y + 1),
+            SetForegroundColor(Color::DarkGrey),
+            Print(clamp_text(&line2, content_width)),
+            ResetColor
+        )?;
+    }
+
+    // Legend
+    let legend_y = rows.saturating_sub(3);
+    queue!(
+        stdout,
+        MoveTo(x, legend_y),
+        SetForegroundColor(Color::DarkGrey),
+        Print("│ = today  "),
+        SetForegroundColor(Color::Green),
+        Print("█ Done  "),
+        SetForegroundColor(Color::Yellow),
+        Print("█ In Progress  "),
+        SetForegroundColor(Color::Blue),
+        Print("█ Todo  "),
+        SetForegroundColor(Color::DarkGrey),
+        Print("█ Backlog"),
+        ResetColor
+    )?;
 
     queue!(
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("1 buckets • 3 kanban • q quit"),
+        Print("↑/↓ select • e edit • 1 buckets • 3 kanban • 4 settings • q quit"),
         ResetColor
     )?;
 
@@ -1988,6 +2355,89 @@ fn mask_api_key(key: &str) -> String {
     }
     let visible = &key[key.len() - 4..];
     format!("\u{2022}\u{2022}\u{2022}\u{2022}{}", visible)
+}
+
+fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let Some(status) = &app.status else {
+        return Ok(());
+    };
+
+    let is_error = status.starts_with("AI error") || status.starts_with("Save failed");
+    let box_width = (cols as usize).min(45).max(20);
+    let inner_w = box_width.saturating_sub(4);
+
+    // Word-wrap the message.
+    let mut lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+    for word in status.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.width() + 1 + word.width() <= inner_w {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    let lines = &lines[..lines.len().min(4)]; // Max 4 lines
+
+    let box_height = (lines.len() as u16 + 2).max(3); // border + content + dismiss
+    // Right-aligned, 1 column from the right edge.
+    let x0 = cols.saturating_sub(box_width as u16 + 1);
+    // Grow upward from just above the input field (input is at rows - 3).
+    let y_bottom = rows.saturating_sub(4);
+    let y0 = y_bottom.saturating_sub(box_height.saturating_sub(1));
+
+    // Clear area.
+    for dy in 0..box_height {
+        queue!(
+            stdout,
+            MoveTo(x0, y0 + dy),
+            Print(pad_to_width("", box_width))
+        )?;
+    }
+
+    // Top border.
+    let border_color = if is_error { Color::Red } else { Color::DarkGrey };
+    let border_label = if is_error { "Error" } else { "Info" };
+    let border_fill = "\u{2500}".repeat(box_width.saturating_sub(border_label.len() + 6));
+    queue!(
+        stdout,
+        MoveTo(x0, y0),
+        SetForegroundColor(border_color),
+        Print(clamp_text(
+            &format!("\u{250c}\u{2500} {} \u{2500}{} ", border_label, border_fill),
+            box_width,
+        )),
+        ResetColor
+    )?;
+
+    // Message lines.
+    let inner_x = x0 + 2;
+    for (i, line) in lines.iter().enumerate() {
+        queue!(
+            stdout,
+            MoveTo(inner_x, y0 + 1 + i as u16),
+            SetForegroundColor(if is_error { Color::Red } else { Color::White }),
+            Print(clamp_text(line, inner_w)),
+            ResetColor
+        )?;
+    }
+
+    // Dismiss hint.
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + box_height - 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text("any key to dismiss", inner_w)),
+        ResetColor
+    )?;
+
+    Ok(())
 }
 
 fn render_delete_confirm(
