@@ -531,7 +531,40 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if app.input.trim().starts_with('@') {
                 let instruction = app.input.trim().strip_prefix('@').unwrap_or("").trim().to_string();
                 if !instruction.is_empty() {
-                    if let Some(task_id) = app.selected_task_id {
+                    // Detect decompose-intent instructions and route through triage.
+                    let lower = instruction.to_ascii_lowercase();
+                    let is_decompose = lower.contains("break down")
+                        || lower.contains("decompose")
+                        || lower.contains("sub-issue")
+                        || lower.contains("subissue")
+                        || lower.contains("sub-task")
+                        || lower.contains("subtask")
+                        || lower.contains("split into")
+                        || lower.contains("break into");
+
+                    if is_decompose {
+                        // Route through triage so decompose action can create real sub-tasks.
+                        if let Some(ai) = &app.ai {
+                            let context = build_ai_context(&app.tasks);
+                            let triage_ctx = build_triage_context(&app.tasks);
+                            ai.enqueue(llm::AiJob {
+                                task_id: Uuid::nil(),
+                                title: String::new(),
+                                suggested_bucket: Bucket::Team,
+                                context,
+                                lock_bucket: false,
+                                lock_priority: false,
+                                lock_due_date: false,
+                                edit_instruction: None,
+                                task_snapshot: None,
+                                triage_input: Some(instruction),
+                                triage_context: Some(triage_ctx),
+                            });
+                            app.status = Some(("AI decomposing…".to_string(), Instant::now(), true));
+                        } else {
+                            app.status = Some(("AI not configured".to_string(), Instant::now(), false));
+                        }
+                    } else if let Some(task_id) = app.selected_task_id {
                         if let Some(task) = app.tasks.iter().find(|t| t.id == task_id) {
                             let snapshot = format_task_snapshot(task);
                             let context = build_ai_context(&app.tasks);
@@ -1494,11 +1527,20 @@ fn poll_ai(app: &mut App) -> bool {
                         app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
                     }
                 }
-                llm::TriageAction::Decompose(specs) => {
+                llm::TriageAction::Decompose { target_id, specs } => {
                     let now = Utc::now();
                     let count = specs.len();
-                    // Link to selected parent task if one is selected.
-                    let parent_id = app.selected_task_id;
+                    // Resolve parent: prefer AI-specified target_id, fall back to selected.
+                    let parent_id = target_id.as_ref().and_then(|prefix| {
+                        app.tasks.iter().find_map(|t| {
+                            let short = t.id.to_string().chars().take(8).collect::<String>();
+                            if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                Some(t.id)
+                            } else {
+                                None
+                            }
+                        })
+                    }).or(app.selected_task_id);
                     // First pass: create all tasks and collect their Uuids.
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                     let default_bucket = specs.first()
