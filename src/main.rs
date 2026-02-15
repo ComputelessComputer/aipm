@@ -2220,14 +2220,16 @@ fn render_bucket_column(
                     SetForegroundColor(Color::Black),
                     SetBackgroundColor(Color::White)
                 )?;
-            } else {
-                queue!(stdout, SetForegroundColor(Color::White))?;
             }
 
             let content = match line_idx {
                 0 => {
-                    // Title: bold only.
-                    queue!(stdout, SetAttribute(Attribute::Bold))?;
+                    // Title: bright default foreground + bold.
+                    if !is_selected {
+                        queue!(stdout, ResetColor, SetAttribute(Attribute::Bold))?;
+                    } else {
+                        queue!(stdout, SetAttribute(Attribute::Bold))?;
+                    }
                     format!(" {}", task.title)
                 }
                 1 => {
