@@ -529,7 +529,13 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
             // @ prefix: edit the selected task via AI.
             if app.input.trim().starts_with('@') {
-                let instruction = app.input.trim().strip_prefix('@').unwrap_or("").trim().to_string();
+                let instruction = app
+                    .input
+                    .trim()
+                    .strip_prefix('@')
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if !instruction.is_empty() {
                     // Detect decompose-intent instructions and route through triage.
                     let lower = instruction.to_ascii_lowercase();
@@ -560,9 +566,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                 triage_input: Some(instruction),
                                 triage_context: Some(triage_ctx),
                             });
-                            app.status = Some(("AI decomposing…".to_string(), Instant::now(), true));
+                            app.status =
+                                Some(("AI decomposing…".to_string(), Instant::now(), true));
                         } else {
-                            app.status = Some(("AI not configured".to_string(), Instant::now(), false));
+                            app.status =
+                                Some(("AI not configured".to_string(), Instant::now(), false));
                         }
                     } else if let Some(task_id) = app.selected_task_id {
                         if let Some(task) = app.tasks.iter().find(|t| t.id == task_id) {
@@ -582,12 +590,14 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                     triage_input: None,
                                     triage_context: None,
                                 });
-                                app.status = Some((format!(
-                                    "AI editing: {}…",
-                                    task.title
-                                ), Instant::now(), true));
+                                app.status = Some((
+                                    format!("AI editing: {}…", task.title),
+                                    Instant::now(),
+                                    true,
+                                ));
                             } else {
-                                app.status = Some(("AI not configured".to_string(), Instant::now(), false));
+                                app.status =
+                                    Some(("AI not configured".to_string(), Instant::now(), false));
                             }
                         }
                     } else {
@@ -635,7 +645,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         task.due_date = Some(d);
                     }
                     app.tasks.push(task);
-                    app.status = Some((format!("Created in {}", hints.bucket.title()), Instant::now(), false));
+                    app.status = Some((
+                        format!("Created in {}", hints.bucket.title()),
+                        Instant::now(),
+                        false,
+                    ));
                     ensure_default_selection(app);
                     persist(app);
                 }
@@ -757,12 +771,16 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                     let from = task.progress;
                     task.advance_progress(now);
-                    app.status = Some((format!(
-                        "{}: {} → {}",
-                        task.title,
-                        from.title(),
-                        task.progress.title()
-                    ), Instant::now(), false));
+                    app.status = Some((
+                        format!(
+                            "{}: {} → {}",
+                            task.title,
+                            from.title(),
+                            task.progress.title()
+                        ),
+                        Instant::now(),
+                        false,
+                    ));
                     persist(app);
                 }
             }
@@ -773,12 +791,16 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                     let from = task.progress;
                     task.retreat_progress(now);
-                    app.status = Some((format!(
-                        "{}: {} → {}",
-                        task.title,
-                        from.title(),
-                        task.progress.title()
-                    ), Instant::now(), false));
+                    app.status = Some((
+                        format!(
+                            "{}: {} → {}",
+                            task.title,
+                            from.title(),
+                            task.progress.title()
+                        ),
+                        Instant::now(),
+                        false,
+                    ));
                     persist(app);
                 }
             }
@@ -839,7 +861,8 @@ fn delete_selected(app: &mut App) {
             .iter()
             .map(|&i| app.tasks[i].id)
             .collect();
-        app.tasks.retain(|t| !child_ids.contains(&t.id) && t.id != id);
+        app.tasks
+            .retain(|t| !child_ids.contains(&t.id) && t.id != id);
         // Clean up any dependency references to the deleted task(s).
         let all_deleted: Vec<Uuid> = std::iter::once(id).chain(child_ids).collect();
         for task in &mut app.tasks {
@@ -1135,19 +1158,15 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         .map(|t| t.bucket)
                         .unwrap_or(Bucket::Team);
                     let now = Utc::now();
-                    let mut child =
-                        Task::new(parent_bucket, "New sub-issue".to_string(), now);
+                    let mut child = Task::new(parent_bucket, "New sub-issue".to_string(), now);
                     child.parent_id = Some(parent_id);
                     let child_id = child.id;
                     app.tasks.push(child);
                     persist(app);
                     let child_count = children_of(&app.tasks, parent_id).len();
                     let new_sub_idx = child_count.saturating_sub(1);
-                    app.edit_parent_stack.push((
-                        parent_id,
-                        EditField::SubIssues,
-                        new_sub_idx,
-                    ));
+                    app.edit_parent_stack
+                        .push((parent_id, EditField::SubIssues, new_sub_idx));
                     app.edit_task_id = Some(child_id);
                     app.edit_field = EditField::Title;
                     app.edit_buf = "New sub-issue".to_string();
@@ -1302,7 +1321,11 @@ fn persist_settings(app: &mut App) {
         return;
     };
     if let Err(err) = storage.save_settings(&app.settings) {
-        app.status = Some((format!("Settings save failed: {err}"), Instant::now(), false));
+        app.status = Some((
+            format!("Settings save failed: {err}"),
+            Instant::now(),
+            false,
+        ));
     }
 }
 
@@ -1385,7 +1408,7 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 cycle_model(app, true);
             }
             _ => {}
-        }
+        },
         _ => {}
     }
     Ok(false)
@@ -1462,7 +1485,12 @@ fn poll_ai(app: &mut App) -> bool {
             match triage_action {
                 llm::TriageAction::Create => {
                     let now = Utc::now();
-                    let title = result.update.title.as_deref().unwrap_or("Untitled").to_string();
+                    let title = result
+                        .update
+                        .title
+                        .as_deref()
+                        .unwrap_or("Untitled")
+                        .to_string();
                     let bucket = result.update.bucket.unwrap_or(Bucket::Team);
                     let mut task = Task::new(bucket, title, now);
                     if let Some(desc) = &result.update.description {
@@ -1484,7 +1512,8 @@ fn poll_ai(app: &mut App) -> bool {
                             &result.update.dependencies,
                         );
                     }
-                    app.status = Some((format!("AI created: {}", task.title), Instant::now(), false));
+                    app.status =
+                        Some((format!("AI created: {}", task.title), Instant::now(), false));
                     app.tasks.push(task);
                     changed = true;
                 }
@@ -1506,11 +1535,19 @@ fn poll_ai(app: &mut App) -> bool {
                         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                             let now = Utc::now();
                             apply_update(task, &result.update, &deps, now);
-                            app.status = Some((format!("AI updated: {}", task.title), Instant::now(), false));
+                            app.status = Some((
+                                format!("AI updated: {}", task.title),
+                                Instant::now(),
+                                false,
+                            ));
                             changed = true;
                         }
                     } else {
-                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
+                        app.status = Some((
+                            format!("AI: task {} not found", prefix),
+                            Instant::now(),
+                            false,
+                        ));
                     }
                 }
                 llm::TriageAction::Delete(prefix) => {
@@ -1521,31 +1558,38 @@ fn poll_ai(app: &mut App) -> bool {
                     if let Some(pos) = target {
                         let title = app.tasks[pos].title.clone();
                         app.tasks.remove(pos);
-                        app.status = Some((format!("AI deleted: {}", title), Instant::now(), false));
+                        app.status =
+                            Some((format!("AI deleted: {}", title), Instant::now(), false));
                         changed = true;
                     } else {
-                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
+                        app.status = Some((
+                            format!("AI: task {} not found", prefix),
+                            Instant::now(),
+                            false,
+                        ));
                     }
                 }
                 llm::TriageAction::Decompose { target_id, specs } => {
                     let now = Utc::now();
                     let count = specs.len();
                     // Resolve parent: prefer AI-specified target_id, fall back to selected.
-                    let parent_id = target_id.as_ref().and_then(|prefix| {
-                        app.tasks.iter().find_map(|t| {
-                            let short = t.id.to_string().chars().take(8).collect::<String>();
-                            if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
-                                Some(t.id)
-                            } else {
-                                None
-                            }
+                    let parent_id = target_id
+                        .as_ref()
+                        .and_then(|prefix| {
+                            app.tasks.iter().find_map(|t| {
+                                let short = t.id.to_string().chars().take(8).collect::<String>();
+                                if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                    Some(t.id)
+                                } else {
+                                    None
+                                }
+                            })
                         })
-                    }).or(app.selected_task_id);
+                        .or(app.selected_task_id);
                     // First pass: create all tasks and collect their Uuids.
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
-                    let default_bucket = specs.first()
-                        .and_then(|s| s.bucket)
-                        .unwrap_or(Bucket::Team);
+                    let default_bucket =
+                        specs.first().and_then(|s| s.bucket).unwrap_or(Bucket::Team);
                     for spec in specs.iter() {
                         let bucket = spec.bucket.unwrap_or(default_bucket);
                         let mut task = Task::new(bucket, spec.title.clone(), now);
@@ -1569,7 +1613,9 @@ fn poll_ai(app: &mut App) -> bool {
                             continue;
                         }
                         let task_id = new_ids[i];
-                        let deps: Vec<Uuid> = spec.depends_on.iter()
+                        let deps: Vec<Uuid> = spec
+                            .depends_on
+                            .iter()
                             .filter_map(|&idx| new_ids.get(idx).copied())
                             .filter(|&dep_id| dep_id != task_id)
                             .collect();
@@ -1577,32 +1623,49 @@ fn poll_ai(app: &mut App) -> bool {
                             task.dependencies = deps;
                         }
                     }
-                    app.status = Some((format!(
-                        "AI created {} sub-task{}",
-                        count,
-                        if count == 1 { "" } else { "s" }
-                    ), Instant::now(), false));
+                    app.status = Some((
+                        format!(
+                            "AI created {} sub-task{}",
+                            count,
+                            if count == 1 { "" } else { "s" }
+                        ),
+                        Instant::now(),
+                        false,
+                    ));
                     changed = true;
                 }
-                llm::TriageAction::BulkUpdate { targets, instruction } => {
+                llm::TriageAction::BulkUpdate {
+                    targets,
+                    instruction,
+                } => {
                     // Resolve target IDs: "all" means every task.
-                    let task_ids: Vec<Uuid> = if targets.len() == 1 && targets[0].eq_ignore_ascii_case("all") {
+                    let task_ids: Vec<Uuid> = if targets.len() == 1
+                        && targets[0].eq_ignore_ascii_case("all")
+                    {
                         app.tasks.iter().map(|t| t.id).collect()
                     } else {
-                        targets.iter().filter_map(|prefix| {
-                            app.tasks.iter().find_map(|t| {
-                                let short = t.id.to_string().chars().take(8).collect::<String>();
-                                if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
-                                    Some(t.id)
-                                } else {
-                                    None
-                                }
+                        targets
+                            .iter()
+                            .filter_map(|prefix| {
+                                app.tasks.iter().find_map(|t| {
+                                    let short =
+                                        t.id.to_string().chars().take(8).collect::<String>();
+                                    if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                        Some(t.id)
+                                    } else {
+                                        None
+                                    }
+                                })
                             })
-                        }).collect()
+                            .collect()
                     };
 
                     if task_ids.is_empty() {
-                        app.status = Some(("AI: no matching tasks found".to_string(), Instant::now(), false));
+                        app.status = Some((
+                            "AI: no matching tasks found".to_string(),
+                            Instant::now(),
+                            false,
+                        ));
                     } else if let Some(ai) = &app.ai {
                         let context = build_ai_context(&app.tasks);
                         for &tid in &task_ids {
@@ -1623,11 +1686,15 @@ fn poll_ai(app: &mut App) -> bool {
                                 });
                             }
                         }
-                        app.status = Some((format!(
-                            "AI updating {} task{}…",
-                            task_ids.len(),
-                            if task_ids.len() == 1 { "" } else { "s" }
-                        ), Instant::now(), true));
+                        app.status = Some((
+                            format!(
+                                "AI updating {} task{}…",
+                                task_ids.len(),
+                                if task_ids.len() == 1 { "" } else { "s" }
+                            ),
+                            Instant::now(),
+                            true,
+                        ));
                     }
                 }
             }
@@ -1645,13 +1712,72 @@ fn poll_ai(app: &mut App) -> bool {
             Vec::new()
         };
 
-        let Some(task) = app.tasks.iter_mut().find(|t| t.id == result.task_id) else {
-            continue;
-        };
+        let parent_id = result.task_id;
 
-        let now = Utc::now();
-        if apply_update(task, &result.update, &deps, now) {
-            app.status = Some((format!("AI updated: {}", task.title), Instant::now(), false));
+        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == parent_id) {
+            let now = Utc::now();
+            if apply_update(task, &result.update, &deps, now) {
+                app.status = Some((format!("AI updated: {}", task.title), Instant::now(), false));
+                changed = true;
+            }
+        }
+
+        // Create actual sub-task records when the edit response includes subtasks.
+        if !result.sub_task_specs.is_empty() {
+            let now = Utc::now();
+            let parent_bucket = app
+                .tasks
+                .iter()
+                .find(|t| t.id == parent_id)
+                .map(|t| t.bucket)
+                .unwrap_or(Bucket::Team);
+            let count = result.sub_task_specs.len();
+            let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+
+            for spec in result.sub_task_specs.iter() {
+                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                let mut task = Task::new(bucket, spec.title.clone(), now);
+                task.parent_id = Some(parent_id);
+                task.description = spec.description.clone();
+                if let Some(p) = spec.priority {
+                    task.priority = p;
+                }
+                if let Some(prog) = spec.progress {
+                    task.set_progress(prog, now);
+                }
+                if let Some(due) = spec.due_date {
+                    task.due_date = Some(due);
+                }
+                new_ids.push(task.id);
+                app.tasks.push(task);
+            }
+
+            // Second pass: resolve depends_on indices to Uuid dependencies.
+            for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                if spec.depends_on.is_empty() {
+                    continue;
+                }
+                let task_id = new_ids[i];
+                let dep_ids: Vec<Uuid> = spec
+                    .depends_on
+                    .iter()
+                    .filter_map(|&idx| new_ids.get(idx).copied())
+                    .filter(|&dep_id| dep_id != task_id)
+                    .collect();
+                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.dependencies = dep_ids;
+                }
+            }
+
+            app.status = Some((
+                format!(
+                    "AI created {} sub-task{}",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                ),
+                Instant::now(),
+                false,
+            ));
             changed = true;
         }
     }
@@ -1665,7 +1791,12 @@ fn poll_ai(app: &mut App) -> bool {
 }
 
 /// Apply a TaskUpdate to a task, returning true if anything changed.
-fn apply_update(task: &mut Task, update: &llm::TaskUpdate, deps: &[Uuid], now: chrono::DateTime<Utc>) -> bool {
+fn apply_update(
+    task: &mut Task,
+    update: &llm::TaskUpdate,
+    deps: &[Uuid],
+    now: chrono::DateTime<Utc>,
+) -> bool {
     let mut task_changed = false;
     let is_edit = update.is_edit;
 
@@ -1758,7 +1889,11 @@ fn build_triage_context(tasks: &[Task]) -> String {
             t.title,
             t.progress.title(),
             t.priority.title(),
-            if desc.is_empty() { "no description" } else { desc }
+            if desc.is_empty() {
+                "no description"
+            } else {
+                desc
+            }
         ));
     }
     out
@@ -2240,7 +2375,12 @@ fn render_bucket_column(
         };
 
         // Table row 1: progress │ priority
-        let table_row1 = format!("{} {} │ {}", gauge, task.progress.title(), task.priority.title());
+        let table_row1 = format!(
+            "{} {} │ {}",
+            gauge,
+            task.progress.title(),
+            task.priority.title()
+        );
         // Table row 2: due │ sub-issues/deps
         let table_row2 = format!("Due {} │ {}", due, sub_info);
 
@@ -2314,7 +2454,12 @@ fn render_bucket_column(
             };
 
             let padded = pad_to_width(&clamp_text(&content, width), width);
-            queue!(stdout, Print(padded), SetAttribute(Attribute::Reset), ResetColor)?;
+            queue!(
+                stdout,
+                Print(padded),
+                SetAttribute(Attribute::Reset),
+                ResetColor
+            )?;
         }
 
         // Spacer line
@@ -2457,7 +2602,9 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         if app.timeline_selected < app.timeline_scroll {
             app.timeline_scroll = app.timeline_selected;
         } else if app.timeline_selected >= app.timeline_scroll + list_height {
-            app.timeline_scroll = app.timeline_selected.saturating_sub(list_height.saturating_sub(1));
+            app.timeline_scroll = app
+                .timeline_selected
+                .saturating_sub(list_height.saturating_sub(1));
         }
         let max_scroll = task_count.saturating_sub(list_height);
         app.timeline_scroll = app.timeline_scroll.min(max_scroll);
@@ -2472,7 +2619,9 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         let is_selected = sorted_pos == app.timeline_selected;
 
         // Task label
-        let prefix = if task.is_child() { "↳" } else {
+        let prefix = if task.is_child() {
+            "↳"
+        } else {
             match task.bucket {
                 Bucket::Team => "●",
                 Bucket::John => "◆",
@@ -2791,9 +2940,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print(
-            "←/→ columns • ↑/↓ select • p advance • P back • e edit • 1/2 tabs • q quit"
-        ),
+        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • 1/2 tabs • q quit"),
         ResetColor
     )?;
 
@@ -2850,9 +2997,7 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 
         let show_value = if is_current && app.settings_editing {
             format!("{}\u{258f}", app.settings_buf)
-        } else if is_current
-            && matches!(field, SettingsField::AiEnabled | SettingsField::Model)
-        {
+        } else if is_current && matches!(field, SettingsField::AiEnabled | SettingsField::Model) {
             format!("\u{25c2} {} \u{25b8}", value)
         } else {
             value
@@ -2972,7 +3117,7 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
     let lines = &lines[..lines.len().min(4)]; // Max 4 lines
 
     let box_height = (lines.len() as u16 + 2).max(3); // border + content + dismiss
-    // Right-aligned, 1 column from the right edge.
+                                                      // Right-aligned, 1 column from the right edge.
     let x0 = cols.saturating_sub(box_width as u16 + 1);
     // Grow upward from just above the input field (input is at rows - 3).
     let y_bottom = rows.saturating_sub(4);
@@ -2988,7 +3133,11 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
     }
 
     // Top border.
-    let border_color = if is_error { Color::Red } else { Color::DarkGrey };
+    let border_color = if is_error {
+        Color::Red
+    } else {
+        Color::DarkGrey
+    };
     let border_label = if is_error { "Error" } else { "Info" };
     let border_fill = "\u{2500}".repeat(box_width.saturating_sub(border_label.len() + 6));
     queue!(
@@ -3035,8 +3184,7 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
         let total_ticks = 6usize;
         let filled = (total_ticks as u64 * remaining.as_millis() as u64
             / TOAST_DURATION.as_millis() as u64) as usize;
-        let bar: String = "━".repeat(filled)
-            + &"┉".repeat(total_ticks.saturating_sub(filled));
+        let bar: String = "━".repeat(filled) + &"┉".repeat(total_ticks.saturating_sub(filled));
         let ticker = format!("{}s {}", secs_left, bar);
         let ticker_w = ticker.width();
 
@@ -3056,12 +3204,7 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
     Ok(())
 }
 
-fn render_delete_confirm(
-    stdout: &mut Stdout,
-    app: &App,
-    cols: u16,
-    rows: u16,
-) -> io::Result<()> {
+fn render_delete_confirm(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
     let Some(id) = app.confirm_delete_id else {
         return Ok(());
     };
@@ -3213,7 +3356,11 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 } else {
                     queue!(stdout, SetForegroundColor(Color::White))?;
                 }
-                let prefix = if li == 0 { &label } else { &" ".repeat(label_w) };
+                let prefix = if li == 0 {
+                    &label
+                } else {
+                    &" ".repeat(label_w)
+                };
                 let row_text = format!("{}{}", prefix, clamp_text(line, value_w));
                 queue!(
                     stdout,
@@ -3278,12 +3425,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                     Progress::Todo => "\u{25cb}",
                     Progress::Backlog => "\u{25cc}",
                 };
-                let row_text = format!(
-                    "{}  {} {}",
-                    " ".repeat(label_w),
-                    icon,
-                    child.title
-                );
+                let row_text = format!("{}  {} {}", " ".repeat(label_w), icon, child.title);
                 queue!(stdout, MoveTo(inner_x, y_cursor))?;
                 if is_sel {
                     queue!(

@@ -88,6 +88,7 @@ pub struct AiResult {
     pub update: TaskUpdate,
     pub error: Option<String>,
     pub triage_action: Option<TriageAction>,
+    pub sub_task_specs: Vec<SubTaskSpec>,
 }
 
 #[derive(Debug)]
@@ -231,6 +232,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                     update: TaskUpdate::default(),
                     error: Some(format!("AI response read failed: {err}")),
                     triage_action: None,
+                    sub_task_specs: Vec::new(),
                 }
             }
         },
@@ -241,6 +243,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 update: TaskUpdate::default(),
                 error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             };
         }
         Err(ureq::Error::Transport(t)) => {
@@ -249,6 +252,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 update: TaskUpdate::default(),
                 error: Some(format!("AI transport error: {t}")),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             };
         }
     };
@@ -260,7 +264,8 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI JSON parse failed: {err}")),
-                    triage_action: None,
+                triage_action: None,
+                sub_task_specs: Vec::new(),
             }
         }
     };
@@ -284,6 +289,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                     truncate(content, 200)
                 )),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             }
         }
     };
@@ -350,6 +356,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
         update,
         error: None,
         triage_action: None,
+        sub_task_specs: Vec::new(),
     }
 }
 
@@ -377,6 +384,7 @@ struct Enriched {
     priority: Option<String>,
     due_date: Option<String>,
     dependencies: Option<Vec<String>>,
+    subtasks: Option<Vec<SubTaskEnriched>>,
 }
 
 fn extract_json_object(text: &str) -> Option<String> {
@@ -427,7 +435,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
     }
 
     let user = format!(
-        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null\n}}\n",
+        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": \"Team\"|\"John\"|\"Admin\", \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- Only include fields that should change. Set unchanged fields to null.\n",
         snapshot,
         instruction,
         context_lines
@@ -456,6 +464,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                     update: TaskUpdate::default(),
                     error: Some(format!("AI response read failed: {err}")),
                     triage_action: None,
+                    sub_task_specs: Vec::new(),
                 }
             }
         },
@@ -466,6 +475,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 update: TaskUpdate::default(),
                 error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             };
         }
         Err(ureq::Error::Transport(t)) => {
@@ -474,6 +484,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 update: TaskUpdate::default(),
                 error: Some(format!("AI transport error: {t}")),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             };
         }
     };
@@ -485,7 +496,8 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI JSON parse failed: {err}")),
-                    triage_action: None,
+                triage_action: None,
+                sub_task_specs: Vec::new(),
             }
         }
     };
@@ -509,6 +521,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                     truncate(content, 200)
                 )),
                 triage_action: None,
+                sub_task_specs: Vec::new(),
             }
         }
     };
@@ -581,11 +594,49 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
         update.dependencies = out;
     }
 
+    let sub_task_specs: Vec<SubTaskSpec> = enriched
+        .subtasks
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|st| {
+            let title = st
+                .title
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            Some(SubTaskSpec {
+                title: truncate(&title, 200).to_string(),
+                description: st
+                    .description
+                    .as_deref()
+                    .map(|s| truncate(s.trim(), 400).to_string())
+                    .unwrap_or_default(),
+                bucket: st.bucket.as_deref().and_then(parse_bucket),
+                priority: st
+                    .priority
+                    .as_deref()
+                    .and_then(|s| parse_priority(s.trim())),
+                progress: st
+                    .progress
+                    .as_deref()
+                    .and_then(|s| parse_progress(s.trim())),
+                due_date: st
+                    .due_date
+                    .as_deref()
+                    .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                depends_on: st.depends_on.unwrap_or_default(),
+            })
+        })
+        .take(12)
+        .collect();
+
     AiResult {
         task_id: job.task_id,
         update,
         error: None,
         triage_action: None,
+        sub_task_specs,
     }
 }
 
@@ -639,6 +690,7 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
         update: TaskUpdate::default(),
         error: Some(msg),
         triage_action: None,
+        sub_task_specs: Vec::new(),
     };
 
     let resp = ureq::post(&cfg.api_url)
@@ -687,14 +739,22 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
     let action_str = triaged.action.as_deref().unwrap_or("create");
     let triage_action = match action_str {
         "update" => {
-            if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Some(target) = triaged
+                .target_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
                 Some(TriageAction::Update(target.trim().to_string()))
             } else {
                 Some(TriageAction::Create)
             }
         }
         "delete" => {
-            if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Some(target) = triaged
+                .target_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
                 Some(TriageAction::Delete(target.trim().to_string()))
             } else {
                 // Can't delete without a target; fall back to create.
@@ -724,31 +784,49 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|st| {
-                    let title = st.title.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())?.to_string();
+                    let title = st
+                        .title
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())?
+                        .to_string();
                     Some(SubTaskSpec {
                         title: truncate(&title, 200).to_string(),
-                        description: st.description
+                        description: st
+                            .description
                             .as_deref()
                             .map(|s| truncate(s.trim(), 400).to_string())
                             .unwrap_or_default(),
                         bucket: st.bucket.as_deref().and_then(parse_bucket),
-                        priority: st.priority.as_deref().and_then(|s| parse_priority(s.trim())),
-                        progress: st.progress.as_deref().and_then(|s| parse_progress(s.trim())),
-                        due_date: st.due_date.as_deref()
+                        priority: st
+                            .priority
+                            .as_deref()
+                            .and_then(|s| parse_priority(s.trim())),
+                        progress: st
+                            .progress
+                            .as_deref()
+                            .and_then(|s| parse_progress(s.trim())),
+                        due_date: st
+                            .due_date
+                            .as_deref()
                             .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
                         depends_on: st.depends_on.unwrap_or_default(),
                     })
                 })
                 .take(12) // cap at 12 subtasks
                 .collect();
-            let decompose_target = triaged.target_id
+            let decompose_target = triaged
+                .target_id
                 .as_deref()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
             if specs.is_empty() {
                 Some(TriageAction::Create)
             } else {
-                Some(TriageAction::Decompose { target_id: decompose_target, specs })
+                Some(TriageAction::Decompose {
+                    target_id: decompose_target,
+                    specs,
+                })
             }
         }
         _ => Some(TriageAction::Create),
@@ -827,6 +905,7 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
         update,
         error: None,
         triage_action,
+        sub_task_specs: Vec::new(),
     }
 }
 
