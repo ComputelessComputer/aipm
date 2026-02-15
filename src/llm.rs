@@ -32,6 +32,10 @@ pub struct AiJob {
     pub edit_instruction: Option<String>,
     /// Formatted snapshot of the task being edited.
     pub task_snapshot: Option<String>,
+    /// When set, this is a triage job: AI decides create vs update.
+    pub triage_input: Option<String>,
+    /// Pre-formatted full task list for triage context.
+    pub triage_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,10 +51,19 @@ pub struct TaskUpdate {
 }
 
 #[derive(Debug, Clone)]
+pub enum TriageAction {
+    /// AI decided to create a new task.
+    Create,
+    /// AI decided to update an existing task (id prefix).
+    Update(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct AiResult {
     pub task_id: Uuid,
     pub update: TaskUpdate,
     pub error: Option<String>,
+    pub triage_action: Option<TriageAction>,
 }
 
 #[derive(Debug)]
@@ -139,6 +152,9 @@ fn worker_loop(cfg: OpenAiConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiR
 }
 
 fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
+    if let Some(raw_input) = &job.triage_input {
+        return triage_with_openai(cfg, job, raw_input);
+    }
     if let Some(instruction) = &job.edit_instruction {
         return edit_task_with_openai(cfg, job, instruction);
     }
@@ -190,6 +206,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                     task_id: job.task_id,
                     update: TaskUpdate::default(),
                     error: Some(format!("AI response read failed: {err}")),
+                    triage_action: None,
                 }
             }
         },
@@ -199,6 +216,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
+                triage_action: None,
             };
         }
         Err(ureq::Error::Transport(t)) => {
@@ -206,6 +224,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI transport error: {t}")),
+                triage_action: None,
             };
         }
     };
@@ -217,6 +236,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI JSON parse failed: {err}")),
+                    triage_action: None,
             }
         }
     };
@@ -239,6 +259,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                     "AI output not valid JSON ({err}): {}",
                     truncate(content, 200)
                 )),
+                triage_action: None,
             }
         }
     };
@@ -304,6 +325,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
         task_id: job.task_id,
         update,
         error: None,
+        triage_action: None,
     }
 }
 
@@ -409,6 +431,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                     task_id: job.task_id,
                     update: TaskUpdate::default(),
                     error: Some(format!("AI response read failed: {err}")),
+                    triage_action: None,
                 }
             }
         },
@@ -418,6 +441,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
+                triage_action: None,
             };
         }
         Err(ureq::Error::Transport(t)) => {
@@ -425,6 +449,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI transport error: {t}")),
+                triage_action: None,
             };
         }
     };
@@ -436,6 +461,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
                 error: Some(format!("AI JSON parse failed: {err}")),
+                    triage_action: None,
             }
         }
     };
@@ -458,6 +484,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                     "AI output not valid JSON ({err}): {}",
                     truncate(content, 200)
                 )),
+                triage_action: None,
             }
         }
     };
@@ -534,6 +561,176 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
         task_id: job.task_id,
         update,
         error: None,
+        triage_action: None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageEnriched {
+    action: Option<String>,
+    target_id: Option<String>,
+    title: Option<String>,
+    bucket: Option<String>,
+    description: Option<String>,
+    progress: Option<String>,
+    priority: Option<String>,
+    due_date: Option<String>,
+    dependencies: Option<Vec<String>>,
+}
+
+fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiResult {
+    let system = "You are an expert AI project manager. Analyze the user's message and decide whether to CREATE a new task or UPDATE an existing one. Output ONLY valid JSON. No markdown.";
+
+    let triage_ctx = job.triage_context.as_deref().unwrap_or("");
+
+    let user = format!(
+        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent:\n- If the message is about an EXISTING task (status update, clarification, etc.), UPDATE it.\n- If it's a genuinely new piece of work, CREATE a new task.\n- Generate a clean, actionable title (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\",\n  \"target_id\": \"id_prefix\" | null,\n  \"title\": string,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\",\n  \"description\": string,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null\n}}\n",
+        raw_input,
+        triage_ctx
+    );
+
+    let body = json!({
+        "model": cfg.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ]
+    });
+
+    let err_result = |msg: String| AiResult {
+        task_id: job.task_id,
+        update: TaskUpdate::default(),
+        error: Some(msg),
+        triage_action: None,
+    };
+
+    let resp = ureq::post(&cfg.api_url)
+        .set("Authorization", &format!("Bearer {}", cfg.api_key))
+        .set("Content-Type", "application/json")
+        .timeout(cfg.timeout)
+        .send_string(&body.to_string());
+
+    let text = match resp {
+        Ok(r) => match r.into_string() {
+            Ok(s) => s,
+            Err(err) => return err_result(format!("AI response read failed: {err}")),
+        },
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            return err_result(format!("AI HTTP {}: {}", code, truncate(&body, 200)));
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return err_result(format!("AI transport error: {t}"));
+        }
+    };
+
+    let chat: ChatResponse = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(err) => return err_result(format!("AI JSON parse failed: {err}")),
+    };
+
+    let content = chat
+        .choices
+        .get(0)
+        .and_then(|c| c.message.content.as_deref())
+        .unwrap_or("");
+
+    let json_text = extract_json_object(content).unwrap_or_else(|| content.trim().to_string());
+
+    let triaged: TriageEnriched = match serde_json::from_str(&json_text) {
+        Ok(v) => v,
+        Err(err) => {
+            return err_result(format!(
+                "AI output not valid JSON ({err}): {}",
+                truncate(content, 200)
+            ));
+        }
+    };
+
+    let action_str = triaged.action.as_deref().unwrap_or("create");
+    let triage_action = if action_str == "update" {
+        if let Some(target) = triaged.target_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(TriageAction::Update(target.trim().to_string()))
+        } else {
+            Some(TriageAction::Create)
+        }
+    } else {
+        Some(TriageAction::Create)
+    };
+
+    let mut update = TaskUpdate {
+        is_edit: matches!(&triage_action, Some(TriageAction::Update(_))),
+        ..TaskUpdate::default()
+    };
+
+    update.title = triaged
+        .title
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate(s, 200).to_string());
+
+    if let Some(bucket) = triaged.bucket.as_deref().and_then(parse_bucket) {
+        update.bucket = Some(bucket);
+    }
+
+    update.description = triaged
+        .description
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate(s, 400).to_string());
+
+    if let Some(prio) = triaged
+        .priority
+        .as_deref()
+        .and_then(|s| parse_priority(s.trim()))
+    {
+        update.priority = Some(prio);
+    }
+
+    if let Some(prog) = triaged
+        .progress
+        .as_deref()
+        .and_then(|s| parse_progress(s.trim()))
+    {
+        update.progress = Some(prog);
+    }
+
+    if let Some(date_str) = triaged.due_date.as_deref().map(|s| s.trim()) {
+        if !date_str.is_empty() {
+            if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                update.due_date = Some(date);
+            }
+        }
+    }
+
+    let allowed: HashSet<String> = job
+        .context
+        .iter()
+        .map(|t| short_id(t.id))
+        .collect::<HashSet<_>>();
+
+    if let Some(deps) = triaged.dependencies {
+        let mut out = Vec::new();
+        for dep in deps.into_iter().take(8) {
+            let prefix = dep.trim();
+            if prefix.len() < 4 {
+                continue;
+            }
+            let key = prefix.chars().take(8).collect::<String>();
+            if allowed.contains(&key) && !out.contains(&key) {
+                out.push(key);
+            }
+        }
+        update.dependencies = out;
+    }
+
+    AiResult {
+        task_id: job.task_id,
+        update,
+        error: None,
+        triage_action,
     }
 }
 

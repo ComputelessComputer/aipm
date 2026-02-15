@@ -525,6 +525,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                     lock_due_date: false,
                                     edit_instruction: Some(instruction),
                                     task_snapshot: Some(snapshot),
+                                    triage_input: None,
+                                    triage_context: None,
                                 });
                                 app.status = Some((format!(
                                     "AI editing: {}…",
@@ -542,51 +544,47 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 return Ok(false);
             }
 
-            let maybe = ai::infer_new_task(&app.input);
-            if let Some(hints) = maybe {
-                let lock_bucket = hints.bucket_locked;
-                let lock_priority = hints.priority.is_some();
-                let lock_due_date = hints.due_date.is_some();
+            let raw_input = app.input.trim().to_string();
+            if raw_input.is_empty() {
+                return Ok(false);
+            }
+            app.input.clear();
 
-                let now = Utc::now();
-                let mut task = Task::new(hints.bucket, hints.title, now);
-                if let Some(p) = hints.priority {
-                    task.priority = p;
-                }
-                if let Some(d) = hints.due_date {
-                    task.due_date = Some(d);
-                }
-
+            // AI triage: let the AI decide create vs update.
+            if let Some(ai) = &app.ai {
                 let context = build_ai_context(&app.tasks);
-                let task_id = task.id;
-                let task_title = task.title.clone();
-                let suggested_bucket = task.bucket;
-
-                app.tasks.push(task);
-                app.input.clear();
-
-                if let Some(ai) = &app.ai {
-                    ai.enqueue(llm::AiJob {
-                        task_id,
-                        title: task_title,
-                        suggested_bucket,
-                        context,
-                        lock_bucket,
-                        lock_priority,
-                        lock_due_date,
-                        edit_instruction: None,
-                        task_snapshot: None,
-                    });
-                    app.status = Some((format!(
-                        "Created in {} • AI thinking…",
-                        suggested_bucket.title()
-                    ), Instant::now()));
-                } else {
-                    app.status = Some((format!("Created in {}", suggested_bucket.title()), Instant::now()));
+                let triage_ctx = build_triage_context(&app.tasks);
+                ai.enqueue(llm::AiJob {
+                    task_id: Uuid::nil(),
+                    title: String::new(),
+                    suggested_bucket: Bucket::Team,
+                    context,
+                    lock_bucket: false,
+                    lock_priority: false,
+                    lock_due_date: false,
+                    edit_instruction: None,
+                    task_snapshot: None,
+                    triage_input: Some(raw_input),
+                    triage_context: Some(triage_ctx),
+                });
+                app.status = Some(("AI thinking…".to_string(), Instant::now()));
+            } else {
+                // Fallback: local inference when AI is not configured.
+                let maybe = ai::infer_new_task(&raw_input);
+                if let Some(hints) = maybe {
+                    let now = Utc::now();
+                    let mut task = Task::new(hints.bucket, hints.title, now);
+                    if let Some(p) = hints.priority {
+                        task.priority = p;
+                    }
+                    if let Some(d) = hints.due_date {
+                        task.due_date = Some(d);
+                    }
+                    app.tasks.push(task);
+                    app.status = Some((format!("Created in {}", hints.bucket.title()), Instant::now()));
+                    ensure_default_selection(app);
+                    persist(app);
                 }
-
-                ensure_default_selection(app);
-                persist(app);
             }
             Ok(false)
         }
@@ -1278,6 +1276,71 @@ fn poll_ai(app: &mut App) -> bool {
             continue;
         }
 
+        // Handle triage results: create new task or find & update existing.
+        if let Some(triage_action) = &result.triage_action {
+            match triage_action {
+                llm::TriageAction::Create => {
+                    let now = Utc::now();
+                    let title = result.update.title.as_deref().unwrap_or("Untitled").to_string();
+                    let bucket = result.update.bucket.unwrap_or(Bucket::Team);
+                    let mut task = Task::new(bucket, title, now);
+                    if let Some(desc) = &result.update.description {
+                        task.description = desc.clone();
+                    }
+                    if let Some(progress) = result.update.progress {
+                        task.set_progress(progress, now);
+                    }
+                    if let Some(priority) = result.update.priority {
+                        task.priority = priority;
+                    }
+                    if let Some(due_date) = result.update.due_date {
+                        task.due_date = Some(due_date);
+                    }
+                    if !result.update.dependencies.is_empty() {
+                        task.dependencies = resolve_dependency_prefixes(
+                            &app.tasks,
+                            task.id,
+                            &result.update.dependencies,
+                        );
+                    }
+                    app.status = Some((format!("AI created: {}", task.title), Instant::now()));
+                    app.tasks.push(task);
+                    changed = true;
+                }
+                llm::TriageAction::Update(prefix) => {
+                    let target_id = app.tasks.iter().find_map(|t| {
+                        let short = t.id.to_string().chars().take(8).collect::<String>();
+                        if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                            Some(t.id)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(id) = target_id {
+                        let deps = if !result.update.dependencies.is_empty() {
+                            resolve_dependency_prefixes(&app.tasks, id, &result.update.dependencies)
+                        } else {
+                            Vec::new()
+                        };
+                        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                            let now = Utc::now();
+                            apply_update(task, &result.update, &deps, now);
+                            app.status = Some((format!("AI updated: {}", task.title), Instant::now()));
+                            changed = true;
+                        }
+                    } else {
+                        app.status = Some((format!("AI: task {} not found", prefix), Instant::now()));
+                    }
+                }
+            }
+            if changed {
+                ensure_default_selection(app);
+                persist(app);
+            }
+            continue;
+        }
+
+        // Non-triage results: enrichment or @ edit.
         let deps = if !result.update.dependencies.is_empty() {
             resolve_dependency_prefixes(&app.tasks, result.task_id, &result.update.dependencies)
         } else {
@@ -1289,63 +1352,9 @@ fn poll_ai(app: &mut App) -> bool {
         };
 
         let now = Utc::now();
-        let mut task_changed = false;
-        let is_edit = result.update.is_edit;
-
-        if let Some(new_title) = result.update.title {
-            let trimmed = new_title.trim().to_string();
-            if !trimmed.is_empty() && task.title != trimmed {
-                task.title = trimmed;
-                task_changed = true;
-            }
-        }
-
-        if let Some(bucket) = result.update.bucket {
-            if task.bucket != bucket {
-                task.bucket = bucket;
-                task_changed = true;
-            }
-        }
-
-        if let Some(desc) = result.update.description {
-            if is_edit || task.description.trim().is_empty() {
-                task.description = desc;
-                task_changed = true;
-            }
-        }
-
-        if let Some(progress) = result.update.progress {
-            if task.progress != progress {
-                task.set_progress(progress, now);
-                task_changed = true;
-            }
-        }
-
-        if let Some(priority) = result.update.priority {
-            if task.priority != priority {
-                task.priority = priority;
-                task_changed = true;
-            }
-        }
-
-        if let Some(due_date) = result.update.due_date {
-            if task.due_date != Some(due_date) {
-                task.due_date = Some(due_date);
-                task_changed = true;
-            }
-        }
-
-        if !deps.is_empty() {
-            if task.dependencies != deps {
-                task.dependencies = deps;
-                task_changed = true;
-            }
-        }
-
-        if task_changed {
-            task.updated_at = now;
-            changed = true;
+        if apply_update(task, &result.update, &deps, now) {
             app.status = Some((format!("AI updated: {}", task.title), Instant::now()));
+            changed = true;
         }
     }
 
@@ -1355,6 +1364,66 @@ fn poll_ai(app: &mut App) -> bool {
     }
 
     true
+}
+
+/// Apply a TaskUpdate to a task, returning true if anything changed.
+fn apply_update(task: &mut Task, update: &llm::TaskUpdate, deps: &[Uuid], now: chrono::DateTime<Utc>) -> bool {
+    let mut task_changed = false;
+    let is_edit = update.is_edit;
+
+    if let Some(new_title) = &update.title {
+        let trimmed = new_title.trim();
+        if !trimmed.is_empty() && task.title != trimmed {
+            task.title = trimmed.to_string();
+            task_changed = true;
+        }
+    }
+
+    if let Some(bucket) = update.bucket {
+        if task.bucket != bucket {
+            task.bucket = bucket;
+            task_changed = true;
+        }
+    }
+
+    if let Some(desc) = &update.description {
+        if is_edit || task.description.trim().is_empty() {
+            task.description = desc.clone();
+            task_changed = true;
+        }
+    }
+
+    if let Some(progress) = update.progress {
+        if task.progress != progress {
+            task.set_progress(progress, now);
+            task_changed = true;
+        }
+    }
+
+    if let Some(priority) = update.priority {
+        if task.priority != priority {
+            task.priority = priority;
+            task_changed = true;
+        }
+    }
+
+    if let Some(due_date) = update.due_date {
+        if task.due_date != Some(due_date) {
+            task.due_date = Some(due_date);
+            task_changed = true;
+        }
+    }
+
+    if !deps.is_empty() && task.dependencies != deps {
+        task.dependencies = deps.to_vec();
+        task_changed = true;
+    }
+
+    if task_changed {
+        task.updated_at = now;
+    }
+
+    task_changed
 }
 
 fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
@@ -1369,6 +1438,32 @@ fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
             title: t.title.clone(),
         })
         .collect()
+}
+
+/// Build rich context for triage: full task details so the AI can match intent.
+fn build_triage_context(tasks: &[Task]) -> String {
+    let mut refs: Vec<&Task> = tasks.iter().collect();
+    refs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    let mut out = String::new();
+    for t in refs.iter().take(40) {
+        let short = t.id.to_string().chars().take(8).collect::<String>();
+        let desc = if t.description.trim().is_empty() {
+            ""
+        } else {
+            t.description.trim()
+        };
+        out.push_str(&format!(
+            "- {} [{}] {} | {} | {} | {}\n",
+            short,
+            t.bucket.title(),
+            t.title,
+            t.progress.title(),
+            t.priority.title(),
+            if desc.is_empty() { "no description" } else { desc }
+        ));
+    }
+    out
 }
 
 fn format_task_snapshot(task: &Task) -> String {
