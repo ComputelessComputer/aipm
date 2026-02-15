@@ -4,7 +4,7 @@ mod model;
 mod storage;
 
 use std::io::{self, Stdout, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use crossterm::{
@@ -147,7 +147,7 @@ struct App {
     scroll_admin: usize,
 
     input: String,
-    status: Option<String>,
+    status: Option<(String, Instant)>,
 
     edit_task_id: Option<Uuid>,
     edit_field: EditField,
@@ -251,12 +251,25 @@ fn main() -> io::Result<()> {
     run_app(&mut stdout, &mut app)
 }
 
+const TOAST_DURATION: Duration = Duration::from_secs(3);
+
 fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     let mut needs_redraw = true;
 
     loop {
         if poll_ai(app) {
             needs_redraw = true;
+        }
+
+        // Auto-dismiss toast after timeout.
+        if let Some((_, shown_at)) = &app.status {
+            if shown_at.elapsed() >= TOAST_DURATION {
+                app.status = None;
+                needs_redraw = true;
+            } else {
+                // Redraw to update the countdown ticker.
+                needs_redraw = true;
+            }
         }
 
         if needs_redraw {
@@ -287,6 +300,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     // Ctrl-C always quits.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(true);
+    }
+
+    // Toast dismissal intercepts all keys.
+    if app.status.is_some() {
+        app.status = None;
+        return Ok(false);
     }
 
     // Delete confirmation intercepts all keys.
@@ -519,12 +538,12 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         lock_priority,
                         lock_due_date,
                     });
-                    app.status = Some(format!(
+                    app.status = Some((format!(
                         "Created in {} • AI thinking…",
                         suggested_bucket.title()
-                    ));
+                    ), Instant::now()));
                 } else {
-                    app.status = Some(format!("Created in {}", suggested_bucket.title()));
+                    app.status = Some((format!("Created in {}", suggested_bucket.title()), Instant::now()));
                 }
 
                 ensure_default_selection(app);
@@ -612,12 +631,12 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                     let from = task.progress;
                     task.advance_progress(now);
-                    app.status = Some(format!(
+                    app.status = Some((format!(
                         "{}: {} → {}",
                         task.title,
                         from.title(),
                         task.progress.title()
-                    ));
+                    ), Instant::now()));
                     persist(app);
                 }
             }
@@ -628,12 +647,12 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                     let from = task.progress;
                     task.retreat_progress(now);
-                    app.status = Some(format!(
+                    app.status = Some((format!(
                         "{}: {} → {}",
                         task.title,
                         from.title(),
                         task.progress.title()
-                    ));
+                    ), Instant::now()));
                     persist(app);
                 }
             }
@@ -672,7 +691,7 @@ fn delete_selected(app: &mut App) {
     if let Some(pos) = app.tasks.iter().position(|t| t.id == id) {
         let title = app.tasks[pos].title.clone();
         app.tasks.remove(pos);
-        app.status = Some(format!("Deleted: {title}"));
+        app.status = Some((format!("Deleted: {title}"), Instant::now()));
         ensure_default_selection(app);
         persist(app);
     }
@@ -1044,7 +1063,7 @@ fn persist(app: &mut App) {
         return;
     };
     if let Err(err) = storage.save_tasks(&app.tasks) {
-        app.status = Some(format!("Save failed: {err}"));
+        app.status = Some((format!("Save failed: {err}"), Instant::now()));
     }
 }
 
@@ -1053,7 +1072,7 @@ fn persist_settings(app: &mut App) {
         return;
     };
     if let Err(err) = storage.save_settings(&app.settings) {
-        app.status = Some(format!("Settings save failed: {err}"));
+        app.status = Some((format!("Settings save failed: {err}"), Instant::now()));
     }
 }
 
@@ -1204,7 +1223,7 @@ fn poll_ai(app: &mut App) -> bool {
     let mut changed = false;
     for result in results {
         if let Some(err) = result.error {
-            app.status = Some(format!("AI error: {}", err));
+            app.status = Some((format!("AI error: {}", err), Instant::now()));
             continue;
         }
 
@@ -1259,7 +1278,7 @@ fn poll_ai(app: &mut App) -> bool {
         if task_changed {
             task.updated_at = now;
             changed = true;
-            app.status = Some(format!("AI updated: {}", task.title));
+            app.status = Some((format!("AI updated: {}", task.title), Instant::now()));
         }
     }
 
@@ -2358,7 +2377,7 @@ fn mask_api_key(key: &str) -> String {
 }
 
 fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
-    let Some(status) = &app.status else {
+    let Some((status, shown_at)) = &app.status else {
         return Ok(());
     };
 
@@ -2428,12 +2447,27 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
         )?;
     }
 
-    // Dismiss hint.
+    // Countdown ticker.
+    let elapsed = shown_at.elapsed();
+    let remaining = TOAST_DURATION.saturating_sub(elapsed);
+    let secs_left = remaining.as_secs() + if remaining.subsec_millis() > 0 { 1 } else { 0 };
+    let total_ticks = 6usize;
+    let filled = (total_ticks as u64 * remaining.as_millis() as u64
+        / TOAST_DURATION.as_millis() as u64) as usize;
+    let bar: String = "\u{2501}".repeat(filled)
+        + &"\u{2509}".repeat(total_ticks.saturating_sub(filled));
+    let ticker = format!("{}s {}", secs_left, bar);
+    let ticker_w = ticker.width();
+
+    // Dismiss hint with ticker right-aligned.
+    let hint = "any key";
+    let gap = inner_w.saturating_sub(hint.width() + ticker_w);
+    let dismiss_line = format!("{}{}{}", hint, " ".repeat(gap), ticker);
     queue!(
         stdout,
         MoveTo(inner_x, y0 + box_height - 1),
         SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text("any key to dismiss", inner_w)),
+        Print(clamp_text(&dismiss_line, inner_w)),
         ResetColor
     )?;
 
