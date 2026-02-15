@@ -676,7 +676,7 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 move_selection(app, 1);
             }
         }
-        KeyCode::Char('p') | KeyCode::Char(' ') => {
+        KeyCode::Char('p') => {
             if let Some(id) = app.selected_task_id {
                 let now = Utc::now();
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
@@ -1691,7 +1691,7 @@ fn bucket_task_indices(tasks: &[Task], bucket: Bucket) -> Vec<usize> {
 }
 
 fn visible_cards(cards_area_height: usize) -> usize {
-    const CARD_HEIGHT: usize = 7; // 6 lines + 1 spacer
+    const CARD_HEIGHT: usize = 8; // 7 lines + 1 spacer
     cards_area_height / CARD_HEIGHT
 }
 
@@ -1934,8 +1934,8 @@ fn render_bucket_column(
     width: usize,
     visible: usize,
 ) -> io::Result<()> {
-    const CARD_LINES: usize = 6;
-    const CARD_HEIGHT: usize = 7;
+    const CARD_LINES: usize = 7;
+    const CARD_HEIGHT: usize = 8;
 
     let indices = bucket_task_indices(&app.tasks, bucket);
     let scroll = match bucket {
@@ -1943,6 +1943,8 @@ fn render_bucket_column(
         Bucket::John => app.scroll_john,
         Bucket::Admin => app.scroll_admin,
     };
+
+    let inner_w = width.saturating_sub(2); // 1 char padding each side
 
     for (pos, &idx) in indices.iter().enumerate().skip(scroll).take(visible) {
         let task = &app.tasks[idx];
@@ -1952,8 +1954,22 @@ fn render_bucket_column(
 
         let card_top = y + ((pos - scroll) * CARD_HEIGHT) as u16;
 
+        // Word-wrap description into max 2 lines.
+        let desc_text = if task.description.trim().is_empty() {
+            "—".to_string()
+        } else {
+            task.description.trim().to_string()
+        };
+        let desc_lines = wrap_text(&desc_text, inner_w, 2);
+
+        // Build the field table rows.
+        let gauge = progress_gauge(task.progress);
+        let due = task
+            .due_date
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".to_string());
         let deps = if task.dependencies.is_empty() {
-            "none".to_string()
+            "—".to_string()
         } else {
             task.dependencies
                 .iter()
@@ -1963,31 +1979,23 @@ fn render_bucket_column(
                 .join(", ")
         };
 
-        let gauge = progress_gauge(task.progress);
-        let due = task
-            .due_date
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "—".to_string());
+        // Table row 1: progress │ priority
+        let table_row1 = format!("{} {} │ {}", gauge, task.progress.title(), task.priority.title());
+        // Table row 2: due │ deps
+        let table_row2 = format!("Due {} │ → {}", due, deps);
 
-        let lines = [
-            format!("{}", task.title),
-            format!(
-                "{}",
-                if task.description.trim().is_empty() {
-                    "—"
-                } else {
-                    task.description.trim()
-                }
-            ),
-            format!("Dependencies: {}", deps),
-            format!("Progress: {} {}", gauge, task.progress.title()),
-            format!("Priority: {}", task.priority.title()),
-            format!("Due: {}", due),
-        ];
-
-        for (line_idx, line) in lines.iter().enumerate().take(CARD_LINES) {
+        // Assemble card lines:
+        // 0: title (bold)
+        // 1: desc line 1 (grey)
+        // 2: desc line 2 (grey)
+        // 3: separator
+        // 4: progress │ priority (dim)
+        // 5: due │ deps (dim)
+        // 6: blank bottom padding
+        for line_idx in 0..CARD_LINES {
             let y_line = card_top + line_idx as u16;
             queue!(stdout, MoveTo(x, y_line))?;
+
             if is_selected {
                 queue!(
                     stdout,
@@ -1998,17 +2006,52 @@ fn render_bucket_column(
                 queue!(stdout, SetForegroundColor(Color::White))?;
             }
 
-            // Title: bold + italic.
-            if line_idx == 0 {
-                queue!(
-                    stdout,
-                    SetAttribute(Attribute::Bold),
-                    SetAttribute(Attribute::Italic)
-                )?;
-            }
+            let content = match line_idx {
+                0 => {
+                    // Title: bold only.
+                    queue!(stdout, SetAttribute(Attribute::Bold))?;
+                    format!(" {}", task.title)
+                }
+                1 => {
+                    // Desc line 1.
+                    if !is_selected {
+                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    format!(" {}", desc_lines.first().map(|s| s.as_str()).unwrap_or(""))
+                }
+                2 => {
+                    // Desc line 2.
+                    if !is_selected {
+                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    let l2 = desc_lines.get(1).map(|s| s.as_str()).unwrap_or("");
+                    format!(" {}", l2)
+                }
+                3 => {
+                    // Thin separator.
+                    if !is_selected {
+                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    format!(" {}", "─".repeat(inner_w))
+                }
+                4 => {
+                    // Progress │ Priority.
+                    if !is_selected {
+                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    format!(" {}", table_row1)
+                }
+                5 => {
+                    // Due │ Deps.
+                    if !is_selected {
+                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    format!(" {}", table_row2)
+                }
+                _ => String::new(),
+            };
 
-            let line = format!(" {}", line);
-            let padded = pad_to_width(&clamp_text(&line, width), width);
+            let padded = pad_to_width(&clamp_text(&content, width), width);
             queue!(stdout, Print(padded), SetAttribute(Attribute::Reset), ResetColor)?;
         }
 
@@ -2973,6 +3016,35 @@ fn progress_gauge(progress: Progress) -> String {
         }
     }
     out
+}
+
+fn wrap_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.width() + 1 + word.width() <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            if lines.len() >= max_lines {
+                // Append ellipsis to last line if there's more text.
+                if let Some(last) = lines.last_mut() {
+                    if last.width() + 1 < max_width {
+                        last.push_str("…");
+                    }
+                }
+                return lines;
+            }
+            current_line = word.to_string();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    lines
 }
 
 fn clamp_text(text: &str, max_width: usize) -> String {
