@@ -1348,6 +1348,51 @@ fn poll_ai(app: &mut App) -> bool {
                         app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
                     }
                 }
+                llm::TriageAction::Decompose(specs) => {
+                    let now = Utc::now();
+                    let count = specs.len();
+                    // First pass: create all tasks and collect their Uuids.
+                    let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                    let default_bucket = specs.first()
+                        .and_then(|s| s.bucket)
+                        .unwrap_or(Bucket::Team);
+                    for spec in specs.iter() {
+                        let bucket = spec.bucket.unwrap_or(default_bucket);
+                        let mut task = Task::new(bucket, spec.title.clone(), now);
+                        task.description = spec.description.clone();
+                        if let Some(p) = spec.priority {
+                            task.priority = p;
+                        }
+                        if let Some(prog) = spec.progress {
+                            task.set_progress(prog, now);
+                        }
+                        if let Some(due) = spec.due_date {
+                            task.due_date = Some(due);
+                        }
+                        new_ids.push(task.id);
+                        app.tasks.push(task);
+                    }
+                    // Second pass: resolve depends_on indices to Uuid dependencies.
+                    for (i, spec) in specs.iter().enumerate() {
+                        if spec.depends_on.is_empty() {
+                            continue;
+                        }
+                        let task_id = new_ids[i];
+                        let deps: Vec<Uuid> = spec.depends_on.iter()
+                            .filter_map(|&idx| new_ids.get(idx).copied())
+                            .filter(|&dep_id| dep_id != task_id)
+                            .collect();
+                        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                            task.dependencies = deps;
+                        }
+                    }
+                    app.status = Some((format!(
+                        "AI created {} sub-task{}",
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    ), Instant::now(), false));
+                    changed = true;
+                }
                 llm::TriageAction::BulkUpdate { targets, instruction } => {
                     // Resolve target IDs: "all" means every task.
                     let task_ids: Vec<Uuid> = if targets.len() == 1 && targets[0].eq_ignore_ascii_case("all") {
