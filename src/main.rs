@@ -505,6 +505,43 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if app.input.trim().eq_ignore_ascii_case("exit") {
                 return Ok(true);
             }
+
+            // @ prefix: edit the selected task via AI.
+            if app.input.trim().starts_with('@') {
+                let instruction = app.input.trim().strip_prefix('@').unwrap_or("").trim().to_string();
+                if !instruction.is_empty() {
+                    if let Some(task_id) = app.selected_task_id {
+                        if let Some(task) = app.tasks.iter().find(|t| t.id == task_id) {
+                            let snapshot = format_task_snapshot(task);
+                            let context = build_ai_context(&app.tasks);
+                            if let Some(ai) = &app.ai {
+                                ai.enqueue(llm::AiJob {
+                                    task_id,
+                                    title: task.title.clone(),
+                                    suggested_bucket: task.bucket,
+                                    context,
+                                    lock_bucket: false,
+                                    lock_priority: false,
+                                    lock_due_date: false,
+                                    edit_instruction: Some(instruction),
+                                    task_snapshot: Some(snapshot),
+                                });
+                                app.status = Some((format!(
+                                    "AI editing: {}…",
+                                    task.title
+                                ), Instant::now()));
+                            } else {
+                                app.status = Some(("AI not configured".to_string(), Instant::now()));
+                            }
+                        }
+                    } else {
+                        app.status = Some(("No task selected".to_string(), Instant::now()));
+                    }
+                }
+                app.input.clear();
+                return Ok(false);
+            }
+
             let maybe = ai::infer_new_task(&app.input);
             if let Some(hints) = maybe {
                 let lock_bucket = hints.bucket_locked;
@@ -537,6 +574,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         lock_bucket,
                         lock_priority,
                         lock_due_date,
+                        edit_instruction: None,
+                        task_snapshot: None,
                     });
                     app.status = Some((format!(
                         "Created in {} • AI thinking…",
@@ -1251,6 +1290,15 @@ fn poll_ai(app: &mut App) -> bool {
 
         let now = Utc::now();
         let mut task_changed = false;
+        let is_edit = result.update.is_edit;
+
+        if let Some(new_title) = result.update.title {
+            let trimmed = new_title.trim().to_string();
+            if !trimmed.is_empty() && task.title != trimmed {
+                task.title = trimmed;
+                task_changed = true;
+            }
+        }
 
         if let Some(bucket) = result.update.bucket {
             if task.bucket != bucket {
@@ -1260,8 +1308,15 @@ fn poll_ai(app: &mut App) -> bool {
         }
 
         if let Some(desc) = result.update.description {
-            if task.description.trim().is_empty() {
+            if is_edit || task.description.trim().is_empty() {
                 task.description = desc;
+                task_changed = true;
+            }
+        }
+
+        if let Some(progress) = result.update.progress {
+            if task.progress != progress {
+                task.set_progress(progress, now);
                 task_changed = true;
             }
         }
@@ -1314,6 +1369,32 @@ fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
             title: t.title.clone(),
         })
         .collect()
+}
+
+fn format_task_snapshot(task: &Task) -> String {
+    let deps = if task.dependencies.is_empty() {
+        "none".to_string()
+    } else {
+        task.dependencies
+            .iter()
+            .map(|id| id.to_string()[..8].to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let due = task
+        .due_date
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "Title: {}\nBucket: {}\nDescription: {}\nProgress: {}\nPriority: {}\nDue: {}\nDependencies: {}",
+        task.title,
+        task.bucket.title(),
+        if task.description.trim().is_empty() { "none" } else { task.description.trim() },
+        task.progress.title(),
+        task.priority.title(),
+        due,
+        deps
+    )
 }
 
 fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String]) -> Vec<Uuid> {
