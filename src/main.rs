@@ -1348,6 +1348,52 @@ fn poll_ai(app: &mut App) -> bool {
                         app.status = Some((format!("AI: task {} not found", prefix), Instant::now(), false));
                     }
                 }
+                llm::TriageAction::BulkUpdate { targets, instruction } => {
+                    // Resolve target IDs: "all" means every task.
+                    let task_ids: Vec<Uuid> = if targets.len() == 1 && targets[0].eq_ignore_ascii_case("all") {
+                        app.tasks.iter().map(|t| t.id).collect()
+                    } else {
+                        targets.iter().filter_map(|prefix| {
+                            app.tasks.iter().find_map(|t| {
+                                let short = t.id.to_string().chars().take(8).collect::<String>();
+                                if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                    Some(t.id)
+                                } else {
+                                    None
+                                }
+                            })
+                        }).collect()
+                    };
+
+                    if task_ids.is_empty() {
+                        app.status = Some(("AI: no matching tasks found".to_string(), Instant::now(), false));
+                    } else if let Some(ai) = &app.ai {
+                        let context = build_ai_context(&app.tasks);
+                        for &tid in &task_ids {
+                            if let Some(task) = app.tasks.iter().find(|t| t.id == tid) {
+                                let snapshot = format_task_snapshot(task);
+                                ai.enqueue(llm::AiJob {
+                                    task_id: tid,
+                                    title: task.title.clone(),
+                                    suggested_bucket: task.bucket,
+                                    context: context.clone(),
+                                    lock_bucket: false,
+                                    lock_priority: false,
+                                    lock_due_date: false,
+                                    edit_instruction: Some(instruction.clone()),
+                                    task_snapshot: Some(snapshot),
+                                    triage_input: None,
+                                    triage_context: None,
+                                });
+                            }
+                        }
+                        app.status = Some((format!(
+                            "AI updating {} task{}…",
+                            task_ids.len(),
+                            if task_ids.len() == 1 { "" } else { "s" }
+                        ), Instant::now(), true));
+                    }
+                }
             }
             if changed {
                 ensure_default_selection(app);
