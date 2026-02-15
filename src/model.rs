@@ -108,6 +108,8 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub dependencies: Vec<Uuid>,
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
     pub progress: Progress,
     pub priority: Priority,
     pub due_date: Option<NaiveDate>,
@@ -124,6 +126,7 @@ impl Task {
             title,
             description: String::new(),
             dependencies: Vec::new(),
+            parent_id: None,
             progress: Progress::Backlog,
             priority: Priority::Medium,
             due_date: None,
@@ -131,6 +134,10 @@ impl Task {
             start_date: None,
             updated_at: now,
         }
+    }
+
+    pub fn is_child(&self) -> bool {
+        self.parent_id.is_some()
     }
 
     pub fn set_progress(&mut self, next: Progress, now: DateTime<Utc>) {
@@ -156,4 +163,13 @@ impl Task {
         let next = self.progress.retreat();
         self.set_progress(next, now);
     }
+}
+
+pub fn children_of(tasks: &[Task], parent_id: Uuid) -> Vec<usize> {
+    tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.parent_id == Some(parent_id))
+        .map(|(i, _)| i)
+        .collect()
 }

@@ -19,7 +19,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{Bucket, Progress, Task};
+use crate::model::{children_of, Bucket, Progress, Task};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,16 +79,18 @@ enum EditField {
     Progress,
     Priority,
     DueDate,
+    SubIssues,
 }
 
 impl EditField {
-    const ALL: [EditField; 6] = [
+    const ALL: [EditField; 7] = [
         EditField::Title,
         EditField::Description,
         EditField::Bucket,
         EditField::Progress,
         EditField::Priority,
         EditField::DueDate,
+        EditField::SubIssues,
     ];
 
     fn label(self) -> &'static str {
@@ -99,6 +101,7 @@ impl EditField {
             EditField::Progress => "Progress",
             EditField::Priority => "Priority",
             EditField::DueDate => "Due date",
+            EditField::SubIssues => "Sub-issues",
         }
     }
 }
@@ -153,6 +156,8 @@ struct App {
     edit_field: EditField,
     edit_buf: String,
     editing_text: bool,
+    edit_sub_selected: usize,
+    edit_parent_stack: Vec<(Uuid, EditField, usize)>,
 
     timeline_selected: usize,
     timeline_scroll: usize,
@@ -231,6 +236,8 @@ fn main() -> io::Result<()> {
         edit_field: EditField::Title,
         edit_buf: String::new(),
         editing_text: false,
+        edit_sub_selected: 0,
+        edit_parent_stack: Vec::new(),
         timeline_selected: 0,
         timeline_scroll: 0,
         kanban_stage: Progress::Backlog,
@@ -464,13 +471,9 @@ fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Enter | KeyCode::Char('e') => {
             let indices = sorted_timeline_tasks(&app.tasks);
             if let Some(&idx) = indices.get(app.timeline_selected) {
-                let task = &app.tasks[idx];
-                app.selected_task_id = Some(task.id);
-                app.edit_task_id = Some(task.id);
-                app.edit_field = EditField::Title;
-                app.edit_buf = task.title.clone();
-                app.editing_text = false;
-                app.focus = Focus::Edit;
+                let task_id = app.tasks[idx].id;
+                app.selected_task_id = Some(task_id);
+                open_edit_for(app, task_id);
             }
             return Ok(false);
         }
@@ -757,20 +760,38 @@ fn open_edit(app: &mut App) {
     let Some(id) = app.selected_task_id else {
         return;
     };
-    let Some(task) = app.tasks.iter().find(|t| t.id == id) else {
+    open_edit_for(app, id);
+}
+
+fn open_edit_for(app: &mut App, task_id: Uuid) {
+    let Some(task) = app.tasks.iter().find(|t| t.id == task_id) else {
         return;
     };
-
-    app.edit_task_id = Some(id);
+    app.edit_task_id = Some(task_id);
     app.edit_field = EditField::Title;
     app.edit_buf = task.title.clone();
     app.editing_text = false;
+    app.edit_sub_selected = 0;
+    app.edit_parent_stack.clear();
     app.focus = Focus::Edit;
 }
 
 fn close_edit(app: &mut App) {
+    if let Some((parent_id, field, sub_sel)) = app.edit_parent_stack.pop() {
+        if app.tasks.iter().any(|t| t.id == parent_id) {
+            app.edit_task_id = Some(parent_id);
+            app.edit_field = field;
+            let child_count = children_of(&app.tasks, parent_id).len();
+            app.edit_sub_selected = sub_sel.min(child_count.saturating_sub(1));
+            app.editing_text = false;
+            load_edit_buf(app);
+            return;
+        }
+    }
     app.edit_task_id = None;
     app.editing_text = false;
+    app.edit_parent_stack.clear();
+    app.edit_sub_selected = 0;
     app.focus = Focus::Board;
 }
 
@@ -780,7 +801,17 @@ fn delete_selected(app: &mut App) {
     };
     if let Some(pos) = app.tasks.iter().position(|t| t.id == id) {
         let title = app.tasks[pos].title.clone();
-        app.tasks.remove(pos);
+        // Cascade: remove all children of this task.
+        let child_ids: Vec<Uuid> = children_of(&app.tasks, id)
+            .iter()
+            .map(|&i| app.tasks[i].id)
+            .collect();
+        app.tasks.retain(|t| !child_ids.contains(&t.id) && t.id != id);
+        // Clean up any dependency references to the deleted task(s).
+        let all_deleted: Vec<Uuid> = std::iter::once(id).chain(child_ids).collect();
+        for task in &mut app.tasks {
+            task.dependencies.retain(|dep| !all_deleted.contains(dep));
+        }
         app.status = Some((format!("Deleted: {title}"), Instant::now(), false));
         ensure_default_selection(app);
         persist(app);
@@ -804,6 +835,7 @@ fn load_edit_buf(app: &mut App) {
             .due_date
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_default(),
+        EditField::SubIssues => String::new(),
     };
 }
 
@@ -872,6 +904,7 @@ fn commit_edit_buf(app: &mut App) {
                 task.updated_at = now;
             }
         }
+        EditField::SubIssues => {}
     }
 
     persist(app);
@@ -967,6 +1000,15 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             ensure_default_selection(app);
         }
         KeyCode::Up | KeyCode::Char('k') => {
+            if app.edit_field == EditField::SubIssues {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_count = children_of(&app.tasks, task_id).len();
+                    if child_count > 0 && app.edit_sub_selected > 0 {
+                        app.edit_sub_selected -= 1;
+                        return Ok(false);
+                    }
+                }
+            }
             let idx = EditField::ALL
                 .iter()
                 .position(|f| *f == app.edit_field)
@@ -977,26 +1019,67 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 idx - 1
             };
             app.edit_field = EditField::ALL[next];
+            if app.edit_field == EditField::SubIssues {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_count = children_of(&app.tasks, task_id).len();
+                    app.edit_sub_selected = child_count.saturating_sub(1);
+                }
+            }
             load_edit_buf(app);
         }
         KeyCode::Down | KeyCode::Char('j') => {
+            if app.edit_field == EditField::SubIssues {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_count = children_of(&app.tasks, task_id).len();
+                    if child_count > 0 && app.edit_sub_selected < child_count - 1 {
+                        app.edit_sub_selected += 1;
+                        return Ok(false);
+                    }
+                }
+            }
             let idx = EditField::ALL
                 .iter()
                 .position(|f| *f == app.edit_field)
                 .unwrap_or(0);
             let next = (idx + 1) % EditField::ALL.len();
             app.edit_field = EditField::ALL[next];
+            if app.edit_field == EditField::SubIssues {
+                app.edit_sub_selected = 0;
+            }
             load_edit_buf(app);
         }
-        KeyCode::Enter | KeyCode::Char('e') => match app.edit_field {
-            EditField::Title | EditField::Description | EditField::DueDate => {
-                load_edit_buf(app);
-                app.editing_text = true;
+        KeyCode::Enter | KeyCode::Char('e') => {
+            if app.edit_field == EditField::SubIssues {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_ids: Vec<Uuid> = children_of(&app.tasks, task_id)
+                        .iter()
+                        .map(|&i| app.tasks[i].id)
+                        .collect();
+                    if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
+                        app.edit_parent_stack.push((
+                            task_id,
+                            app.edit_field,
+                            app.edit_sub_selected,
+                        ));
+                        app.edit_task_id = Some(child_id);
+                        app.edit_field = EditField::Title;
+                        app.edit_sub_selected = 0;
+                        load_edit_buf(app);
+                    }
+                }
+            } else {
+                match app.edit_field {
+                    EditField::Title | EditField::Description | EditField::DueDate => {
+                        load_edit_buf(app);
+                        app.editing_text = true;
+                    }
+                    EditField::Bucket | EditField::Progress | EditField::Priority => {
+                        cycle_edit_field_value(app, true);
+                    }
+                    EditField::SubIssues => {}
+                }
             }
-            EditField::Bucket | EditField::Progress | EditField::Priority => {
-                cycle_edit_field_value(app, true);
-            }
-        },
+        }
         KeyCode::Left | KeyCode::Char('h') => match app.edit_field {
             EditField::Bucket | EditField::Progress | EditField::Priority => {
                 cycle_edit_field_value(app, false);
@@ -1009,6 +1092,37 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             _ => {}
         },
+        KeyCode::Char('a') => {
+            if app.edit_field == EditField::SubIssues {
+                if let Some(parent_id) = app.edit_task_id {
+                    let parent_bucket = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == parent_id)
+                        .map(|t| t.bucket)
+                        .unwrap_or(Bucket::Team);
+                    let now = Utc::now();
+                    let mut child =
+                        Task::new(parent_bucket, "New sub-issue".to_string(), now);
+                    child.parent_id = Some(parent_id);
+                    let child_id = child.id;
+                    app.tasks.push(child);
+                    persist(app);
+                    let child_count = children_of(&app.tasks, parent_id).len();
+                    let new_sub_idx = child_count.saturating_sub(1);
+                    app.edit_parent_stack.push((
+                        parent_id,
+                        EditField::SubIssues,
+                        new_sub_idx,
+                    ));
+                    app.edit_task_id = Some(child_id);
+                    app.edit_field = EditField::Title;
+                    app.edit_buf = "New sub-issue".to_string();
+                    app.editing_text = true;
+                    app.edit_sub_selected = 0;
+                }
+            }
+        }
         KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
             let id = app.edit_task_id;
             close_edit(app);
@@ -1082,14 +1196,7 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Enter | KeyCode::Char('e') => {
             if let Some(id) = app.kanban_selected {
                 app.selected_task_id = Some(id);
-                let task = app.tasks.iter().find(|t| t.id == id);
-                if let Some(t) = task {
-                    app.edit_task_id = Some(id);
-                    app.edit_field = EditField::Title;
-                    app.edit_buf = t.title.clone();
-                    app.editing_text = false;
-                    app.focus = Focus::Edit;
-                }
+                open_edit_for(app, id);
             }
         }
         KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
@@ -1390,6 +1497,8 @@ fn poll_ai(app: &mut App) -> bool {
                 llm::TriageAction::Decompose(specs) => {
                     let now = Utc::now();
                     let count = specs.len();
+                    // Link to selected parent task if one is selected.
+                    let parent_id = app.selected_task_id;
                     // First pass: create all tasks and collect their Uuids.
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                     let default_bucket = specs.first()
@@ -1398,6 +1507,7 @@ fn poll_ai(app: &mut App) -> bool {
                     for spec in specs.iter() {
                         let bucket = spec.bucket.unwrap_or(default_bucket);
                         let mut task = Task::new(bucket, spec.title.clone(), now);
+                        task.parent_id = parent_id;
                         task.description = spec.description.clone();
                         if let Some(p) = spec.priority {
                             task.priority = p;
@@ -1762,7 +1872,13 @@ fn bucket_task_indices(tasks: &[Task], bucket: Bucket) -> Vec<usize> {
     let mut indices: Vec<usize> = tasks
         .iter()
         .enumerate()
-        .filter_map(|(idx, t)| if t.bucket == bucket { Some(idx) } else { None })
+        .filter_map(|(idx, t)| {
+            if t.bucket == bucket && t.parent_id.is_none() {
+                Some(idx)
+            } else {
+                None
+            }
+        })
         .collect();
 
     indices.sort_by(|&a, &b| {
@@ -2058,21 +2174,33 @@ fn render_bucket_column(
             .due_date
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "—".to_string());
-        let deps = if task.dependencies.is_empty() {
-            "—".to_string()
-        } else {
-            task.dependencies
+        // Sub-issue info.
+        let child_indices = children_of(&app.tasks, task.id);
+        let has_children = !child_indices.is_empty();
+        let sub_info = if has_children {
+            let done_count = child_indices
                 .iter()
-                .take(3)
-                .map(|id| id.to_string()[..8].to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+                .filter(|&&i| app.tasks[i].progress == Progress::Done)
+                .count();
+            format!("▸ {}/{} sub-issues", done_count, child_indices.len())
+        } else if task.dependencies.is_empty() {
+            "→ —".to_string()
+        } else {
+            format!(
+                "→ {}",
+                task.dependencies
+                    .iter()
+                    .take(3)
+                    .map(|id| id.to_string()[..8].to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
 
         // Table row 1: progress │ priority
         let table_row1 = format!("{} {} │ {}", gauge, task.progress.title(), task.priority.title());
-        // Table row 2: due │ deps
-        let table_row2 = format!("Due {} │ → {}", due, deps);
+        // Table row 2: due │ sub-issues/deps
+        let table_row2 = format!("Due {} │ {}", due, sub_info);
 
         // Assemble card lines:
         // 0: title (bold)
@@ -2300,15 +2428,14 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         let is_selected = sorted_pos == app.timeline_selected;
 
         // Task label
-        let label = format!(
-            "{} {}",
+        let prefix = if task.is_child() { "↳" } else {
             match task.bucket {
                 Bucket::Team => "●",
                 Bucket::John => "◆",
                 Bucket::Admin => "■",
-            },
-            task.title
-        );
+            }
+        };
+        let label = format!("{} {}", prefix, task.title);
 
         queue!(stdout, MoveTo(x, y))?;
         if is_selected {
@@ -2596,7 +2723,11 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         for (row, id) in ids.iter().take(list_height).enumerate() {
             let task = app.tasks.iter().find(|t| t.id == *id).unwrap();
             let is_selected = is_active_col && app.kanban_selected == Some(*id);
-            let line = format!(" {} · {}", task.bucket.title(), task.title);
+            let line = if task.is_child() {
+                format!(" ↳ {}", task.title)
+            } else {
+                format!(" {} · {}", task.bucket.title(), task.title)
+            };
             queue!(stdout, MoveTo(x, list_top + row as u16))?;
             if is_selected {
                 queue!(
@@ -2983,9 +3114,11 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let desc_lines = desc_wrapped.len().max(1);
     let _desc_extra = desc_lines.saturating_sub(1) as u16;
 
-    // box_height: border(1) + gap(1) + Title(1) + Desc(N) + Bucket(1) + Progress(1)
-    //             + Priority(1) + DueDate(1) + gap(1) + help(1) = 9 + N
-    let box_height = (9 + desc_lines as u16).min(rows.saturating_sub(2));
+    // Sub-issues section.
+    let child_indices = children_of(&app.tasks, task.id);
+    let child_visible = child_indices.len().min(5);
+    // box_height: 9 (base fields) + desc_lines + 2 (separator + header) + child_visible
+    let box_height = (11 + desc_lines as u16 + child_visible as u16).min(rows.saturating_sub(2));
     let x0 = (cols.saturating_sub(box_width as u16)) / 2;
     let y0 = (rows.saturating_sub(box_height)) / 2;
 
@@ -3048,6 +3181,88 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
             continue;
         }
 
+        if *field == EditField::SubIssues {
+            // Separator.
+            queue!(
+                stdout,
+                MoveTo(inner_x, y_cursor),
+                SetForegroundColor(Color::DarkGrey),
+                Print(pad_to_width(&"─".repeat(inner_w.min(40)), inner_w)),
+                ResetColor
+            )?;
+            y_cursor += 1;
+
+            let done_count = child_indices
+                .iter()
+                .filter(|&&i| app.tasks[i].progress == Progress::Done)
+                .count();
+            let total = child_indices.len();
+            let sub_sel = app.edit_sub_selected.min(total.saturating_sub(1));
+
+            // Header line.
+            let label = format!("{:<width$}", "Sub-issues", width = label_w);
+            let summary = if total == 0 {
+                "○ (none \u{2014} a to add)".to_string()
+            } else {
+                format!("\u{25d2} {} of {}", done_count, total)
+            };
+            let header_text = format!("{}{}", label, summary);
+            queue!(stdout, MoveTo(inner_x, y_cursor))?;
+            if is_current && total == 0 {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White)
+                )?;
+            } else {
+                queue!(stdout, SetForegroundColor(Color::White))?;
+            }
+            queue!(
+                stdout,
+                Print(pad_to_width(&clamp_text(&header_text, inner_w), inner_w)),
+                ResetColor
+            )?;
+            y_cursor += 1;
+
+            // Child lines.
+            for (ci, &child_idx) in child_indices.iter().enumerate().take(5) {
+                let child = &app.tasks[child_idx];
+                let is_sel = is_current && ci == sub_sel;
+                let icon = match child.progress {
+                    Progress::Done => "\u{25cf}",
+                    Progress::InProgress => "\u{25d0}",
+                    Progress::Todo => "\u{25cb}",
+                    Progress::Backlog => "\u{25cc}",
+                };
+                let row_text = format!(
+                    "{}  {} {}",
+                    " ".repeat(label_w),
+                    icon,
+                    child.title
+                );
+                queue!(stdout, MoveTo(inner_x, y_cursor))?;
+                if is_sel {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::White)
+                    )?;
+                } else if is_current {
+                    queue!(stdout, SetForegroundColor(Color::White))?;
+                } else {
+                    queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                }
+                queue!(
+                    stdout,
+                    Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                    ResetColor
+                )?;
+                y_cursor += 1;
+            }
+
+            continue;
+        }
+
         let value = match field {
             EditField::Title => task.title.clone(),
             EditField::Bucket => task.bucket.title().to_string(),
@@ -3063,7 +3278,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 .due_date
                 .map(|d| d.format("%Y-%m-%d").to_string())
                 .unwrap_or_else(|| "—".to_string()),
-            EditField::Description => unreachable!(),
+            EditField::Description | EditField::SubIssues => unreachable!(),
         };
 
         let show_value = if is_current && app.editing_text {
@@ -3104,6 +3319,8 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let help_y = y0 + box_height - 1;
     let help = if app.editing_text {
         "enter save • esc cancel"
+    } else if app.edit_field == EditField::SubIssues {
+        "↑/↓ select • enter open • a add • d delete • esc close"
     } else {
         "↑/↓ field • enter/e edit • ←/→ cycle • d delete • esc close"
     };
@@ -3125,6 +3342,8 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
             }
             if *field == EditField::Description {
                 cy += desc_lines as u16;
+            } else if *field == EditField::SubIssues {
+                cy += 2 + child_visible as u16;
             } else {
                 cy += 1;
             }
