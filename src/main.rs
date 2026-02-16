@@ -113,10 +113,14 @@ enum SettingsField {
     Model,
     ApiUrl,
     Timeout,
+    ShowBacklog,
+    ShowTodo,
+    ShowInProgress,
+    ShowDone,
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 7] = [
+    const ALL: [SettingsField; 11] = [
         SettingsField::OwnerName,
         SettingsField::AiEnabled,
         SettingsField::OpenAiKey,
@@ -124,6 +128,10 @@ impl SettingsField {
         SettingsField::Model,
         SettingsField::ApiUrl,
         SettingsField::Timeout,
+        SettingsField::ShowBacklog,
+        SettingsField::ShowTodo,
+        SettingsField::ShowInProgress,
+        SettingsField::ShowDone,
     ];
 
     fn label(self) -> &'static str {
@@ -135,7 +143,22 @@ impl SettingsField {
             SettingsField::Model => "Model",
             SettingsField::ApiUrl => "API URL",
             SettingsField::Timeout => "Timeout (sec)",
+            SettingsField::ShowBacklog => "Show Backlog",
+            SettingsField::ShowTodo => "Show Todo",
+            SettingsField::ShowInProgress => "Show In Prog.",
+            SettingsField::ShowDone => "Show Done",
         }
+    }
+
+    fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            SettingsField::AiEnabled
+                | SettingsField::ShowBacklog
+                | SettingsField::ShowTodo
+                | SettingsField::ShowInProgress
+                | SettingsField::ShowDone
+        )
     }
 }
 
@@ -801,7 +824,7 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
         KeyCode::Down | KeyCode::Char('j') => {
-            let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket);
+            let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
             let at_last = app
                 .selected_task_id
                 .and_then(|id| bucket_tasks.iter().position(|&idx| app.tasks[idx].id == id))
@@ -1455,29 +1478,52 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.settings_buf = app.settings.timeout_secs.to_string();
                 app.settings_editing = true;
             }
-        },
-        KeyCode::Left => match app.settings_field {
-            SettingsField::AiEnabled => {
-                app.settings.enabled = !app.settings.enabled;
+            SettingsField::ShowBacklog => {
+                app.settings.show_backlog = !app.settings.show_backlog;
                 persist_settings(app);
-                rebuild_ai(app);
             }
-            SettingsField::Model => {
-                cycle_model(app, false);
-            }
-            _ => {}
-        },
-        KeyCode::Right => match app.settings_field {
-            SettingsField::AiEnabled => {
-                app.settings.enabled = !app.settings.enabled;
+            SettingsField::ShowTodo => {
+                app.settings.show_todo = !app.settings.show_todo;
                 persist_settings(app);
-                rebuild_ai(app);
             }
-            SettingsField::Model => {
-                cycle_model(app, true);
+            SettingsField::ShowInProgress => {
+                app.settings.show_in_progress = !app.settings.show_in_progress;
+                persist_settings(app);
             }
-            _ => {}
+            SettingsField::ShowDone => {
+                app.settings.show_done = !app.settings.show_done;
+                persist_settings(app);
+            }
         },
+        KeyCode::Left | KeyCode::Right => {
+            match app.settings_field {
+                SettingsField::AiEnabled => {
+                    app.settings.enabled = !app.settings.enabled;
+                    persist_settings(app);
+                    rebuild_ai(app);
+                }
+                SettingsField::Model => {
+                    cycle_model(app, key.code == KeyCode::Right);
+                }
+                SettingsField::ShowBacklog => {
+                    app.settings.show_backlog = !app.settings.show_backlog;
+                    persist_settings(app);
+                }
+                SettingsField::ShowTodo => {
+                    app.settings.show_todo = !app.settings.show_todo;
+                    persist_settings(app);
+                }
+                SettingsField::ShowInProgress => {
+                    app.settings.show_in_progress = !app.settings.show_in_progress;
+                    persist_settings(app);
+                }
+                SettingsField::ShowDone => {
+                    app.settings.show_done = !app.settings.show_done;
+                    persist_settings(app);
+                }
+                _ => {}
+            }
+        }
         _ => {}
     }
     Ok(false)
@@ -2095,7 +2141,7 @@ fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String
 }
 
 fn ensure_default_selection(app: &mut App) {
-    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket);
+    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
         return;
@@ -2116,7 +2162,7 @@ fn ensure_default_selection(app: &mut App) {
 }
 
 fn move_selection(app: &mut App, delta: i32) {
-    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket);
+    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
         return;
@@ -2158,7 +2204,7 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
     let selected_index = app
         .selected_task_id
         .and_then(|id| {
-            bucket_task_indices(&app.tasks, app.selected_bucket)
+        bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings)
                 .iter()
                 .position(|&idx| app.tasks[idx].id == id)
         })
@@ -2185,12 +2231,15 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
     *scroll = (*scroll).min(max_scroll);
 }
 
-fn bucket_task_indices(tasks: &[Task], bucket: Bucket) -> Vec<usize> {
+fn bucket_task_indices(tasks: &[Task], bucket: Bucket, settings: &AiSettings) -> Vec<usize> {
     let mut indices: Vec<usize> = tasks
         .iter()
         .enumerate()
         .filter_map(|(idx, t)| {
-            if t.bucket == bucket && t.parent_id.is_none() {
+            if t.bucket == bucket
+                && t.parent_id.is_none()
+                && settings.is_progress_visible(t.progress)
+            {
                 Some(idx)
             } else {
                 None
@@ -2201,7 +2250,10 @@ fn bucket_task_indices(tasks: &[Task], bucket: Bucket) -> Vec<usize> {
     indices.sort_by(|&a, &b| {
         let ta = &tasks[a];
         let tb = &tasks[b];
-        tb.created_at.cmp(&ta.created_at)
+        ta.progress
+            .stage_index()
+            .cmp(&tb.progress.stage_index())
+            .then_with(|| tb.created_at.cmp(&ta.created_at))
     });
 
     indices
@@ -2460,7 +2512,7 @@ fn render_bucket_column(
 ) -> io::Result<()> {
     const CARD_LINES: usize = 6; // lines 0-5 (title, desc×2, separator, progress, due)
 
-    let indices = bucket_task_indices(&app.tasks, bucket);
+    let indices = bucket_task_indices(&app.tasks, bucket, &app.settings);
     let scroll = match bucket {
         Bucket::Team => app.scroll_team,
         Bucket::John => app.scroll_john,
@@ -3232,11 +3284,23 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 }
             }
             SettingsField::Timeout => format!("{}s", app.settings.timeout_secs),
+            SettingsField::ShowBacklog => {
+                if app.settings.show_backlog { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            }
+            SettingsField::ShowTodo => {
+                if app.settings.show_todo { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            }
+            SettingsField::ShowInProgress => {
+                if app.settings.show_in_progress { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            }
+            SettingsField::ShowDone => {
+                if app.settings.show_done { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            }
         };
 
         let show_value = if is_current && app.settings_editing {
             format!("{}\u{258f}", app.settings_buf)
-        } else if is_current && matches!(field, SettingsField::AiEnabled | SettingsField::Model) {
+        } else if is_current && (field.is_toggle() || *field == SettingsField::Model) {
             format!("\u{25c2} {} \u{25b8}", value)
         } else {
             value

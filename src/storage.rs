@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use fracturedjson::Formatter as FjFormatter;
 use serde::{Deserialize, Serialize};
 
-use crate::model::Task;
+use crate::model::{Progress, Task};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiSettings {
@@ -23,10 +23,22 @@ pub struct AiSettings {
     pub timeout_secs: u64,
     #[serde(default = "default_owner_name")]
     pub owner_name: String,
+    #[serde(default = "default_true")]
+    pub show_backlog: bool,
+    #[serde(default = "default_true")]
+    pub show_todo: bool,
+    #[serde(default = "default_true")]
+    pub show_in_progress: bool,
+    #[serde(default)]
+    pub show_done: bool,
 }
 
 fn default_owner_name() -> String {
     "John".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AiSettings {
@@ -40,11 +52,24 @@ impl Default for AiSettings {
             api_url: String::new(),
             timeout_secs: 30,
             owner_name: "John".to_string(),
+            show_backlog: true,
+            show_todo: true,
+            show_in_progress: true,
+            show_done: false,
         }
     }
 }
 
 impl AiSettings {
+    pub fn is_progress_visible(&self, progress: Progress) -> bool {
+        match progress {
+            Progress::Backlog => self.show_backlog,
+            Progress::Todo => self.show_todo,
+            Progress::InProgress => self.show_in_progress,
+            Progress::Done => self.show_done,
+        }
+    }
+
     /// Migrate the legacy single `api_key` into per-provider fields.
     pub fn migrate_legacy_key(&mut self) {
         if !self.api_key.is_empty() {
