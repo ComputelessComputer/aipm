@@ -77,3 +77,42 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/*.tar.gz
+
+  update-tap:
+    name: Update Homebrew Tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute source tarball sha256
+        id: sha
+        run: |
+          curl -sL "https://github.com/ComputelessComputer/aipm/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" -o source.tar.gz
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula and push to tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          sed -i 's|url ".*"|url "https://github.com/ComputelessComputer/aipm/archive/refs/tags/'"${GITHUB_REF_NAME}"'.tar.gz"|' Formula/aipm.rb
+          sed -i 's|sha256 ".*"|sha256 "${{ steps.sha.outputs.sha256 }}"|' Formula/aipm.rb
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/ComputelessComputer/homebrew-aipm.git" tap || {
+            mkdir tap && cd tap && git init && git remote add origin "https://x-access-token:${TAP_TOKEN}@github.com/ComputelessComputer/homebrew-aipm.git"
+          }
+
+          mkdir -p tap/Formula
+          cp Formula/aipm.rb tap/Formula/
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/aipm.rb
+          git diff --cached --quiet || {
+            git commit -m "aipm ${{ steps.sha.outputs.version }}"
+            git branch -M main
+            git push -u origin main
+          }
