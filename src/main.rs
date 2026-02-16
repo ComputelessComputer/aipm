@@ -730,6 +730,14 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(id) = app.confirm_delete_id.take() {
                 app.selected_task_id = Some(id);
                 delete_selected(app);
+                // If still in the edit overlay, clamp sub-issue selection.
+                if app.focus == Focus::Edit {
+                    if let Some(parent_id) = app.edit_task_id {
+                        let child_count = children_of(&app.tasks, parent_id).len();
+                        app.edit_sub_selected =
+                            app.edit_sub_selected.min(child_count.saturating_sub(1));
+                    }
+                }
             }
         }
         KeyCode::Esc => {
@@ -1206,11 +1214,24 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
         }
         KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
-            let id = app.edit_task_id;
-            close_edit(app);
-            if let Some(task_id) = id {
-                app.selected_task_id = Some(task_id);
-                app.confirm_delete_id = Some(task_id);
+            if app.edit_field == EditField::SubIssues {
+                // Delete the selected sub-issue (via confirmation dialog).
+                if let Some(parent_id) = app.edit_task_id {
+                    let child_ids: Vec<Uuid> = children_of(&app.tasks, parent_id)
+                        .iter()
+                        .map(|&i| app.tasks[i].id)
+                        .collect();
+                    if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
+                        app.confirm_delete_id = Some(child_id);
+                    }
+                }
+            } else {
+                let id = app.edit_task_id;
+                close_edit(app);
+                if let Some(task_id) = id {
+                    app.selected_task_id = Some(task_id);
+                    app.confirm_delete_id = Some(task_id);
+                }
             }
         }
         _ => {}
