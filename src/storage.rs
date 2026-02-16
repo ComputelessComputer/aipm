@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use fracturedjson::Formatter as FjFormatter;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Task;
@@ -63,6 +64,12 @@ impl Storage {
         Ok(store.tasks)
     }
 
+    /// Reload tasks from disk, returning the latest state.
+    /// Call this before processing new input to pick up external changes.
+    pub fn reload_tasks(&self) -> io::Result<Vec<Task>> {
+        self.load_tasks()
+    }
+
     pub fn save_tasks(&self, tasks: &[Task]) -> io::Result<()> {
         let path = self.dir.join("tasks.json");
         fs::create_dir_all(&self.dir)?;
@@ -71,11 +78,12 @@ impl Storage {
             version: 1,
             tasks: tasks.to_vec(),
         };
-        let json = serde_json::to_string_pretty(&store)
+        let json = serde_json::to_string(&store)
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let formatted = format_json(&json);
 
         let tmp_path = path.with_extension("json.tmp");
-        fs::write(&tmp_path, json)?;
+        fs::write(&tmp_path, formatted)?;
         fs::rename(&tmp_path, &path)?;
         Ok(())
     }
@@ -94,12 +102,25 @@ impl Storage {
     pub fn save_settings(&self, settings: &AiSettings) -> io::Result<()> {
         let path = self.dir.join("settings.json");
         fs::create_dir_all(&self.dir)?;
-        let json = serde_json::to_string_pretty(settings)
+        let json = serde_json::to_string(settings)
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let formatted = format_json(&json);
         let tmp_path = path.with_extension("json.tmp");
-        fs::write(&tmp_path, json)?;
+        fs::write(&tmp_path, formatted)?;
         fs::rename(&tmp_path, &path)?;
         Ok(())
+    }
+}
+
+/// Format JSON using FracturedJson for compact, human-readable output.
+fn format_json(json: &str) -> String {
+    let mut fj = FjFormatter::new();
+    fj.options.max_total_line_length = 100;
+    fj.options.max_inline_complexity = 1;
+    fj.options.indent_spaces = 2;
+    match fj.reformat(json, 0) {
+        Ok(formatted) => formatted,
+        Err(_) => json.to_string(),
     }
 }
 

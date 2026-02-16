@@ -97,8 +97,23 @@ pub struct AiRuntime {
     result_rx: Receiver<AiResult>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    OpenAi,
+    Anthropic,
+}
+
+fn detect_provider(model: &str) -> Provider {
+    if model.starts_with("claude-") {
+        Provider::Anthropic
+    } else {
+        Provider::OpenAi
+    }
+}
+
 #[derive(Debug, Clone)]
-struct OpenAiConfig {
+struct LlmConfig {
+    provider: Provider,
     api_url: String,
     model: String,
     api_key: String,
@@ -111,28 +126,58 @@ impl AiRuntime {
             return None;
         }
 
-        let key = if !settings.api_key.trim().is_empty() {
-            settings.api_key.clone()
-        } else {
-            env::var("OPENAI_API_KEY").ok()?
-        };
-
-        let api_url = if !settings.api_url.trim().is_empty() {
-            settings.api_url.clone()
-        } else {
-            env::var("AIPM_OPENAI_URL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string())
-        };
-
         let model = if !settings.model.trim().is_empty() {
             settings.model.clone()
         } else {
-            env::var("AIPM_OPENAI_MODEL")
+            env::var("AIPM_MODEL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    env::var("AIPM_OPENAI_MODEL")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                })
                 .unwrap_or_else(|| "gpt-5.2-chat-latest".to_string())
+        };
+
+        let provider = detect_provider(&model);
+
+        let key = if !settings.api_key.trim().is_empty() {
+            settings.api_key.clone()
+        } else {
+            match provider {
+                Provider::Anthropic => env::var("ANTHROPIC_API_KEY").ok()?,
+                Provider::OpenAi => env::var("OPENAI_API_KEY").ok()?,
+            }
+        };
+
+        let default_url = match provider {
+            Provider::Anthropic => "https://api.anthropic.com/v1/messages",
+            Provider::OpenAi => "https://api.openai.com/v1/chat/completions",
+        };
+
+        let api_url = if !settings.api_url.trim().is_empty() {
+            // If the saved URL is a known default for the *other* provider, override it.
+            let saved = settings.api_url.trim();
+            if (provider == Provider::Anthropic
+                && saved == "https://api.openai.com/v1/chat/completions")
+                || (provider == Provider::OpenAi
+                    && saved == "https://api.anthropic.com/v1/messages")
+            {
+                default_url.to_string()
+            } else {
+                settings.api_url.clone()
+            }
+        } else {
+            env::var("AIPM_API_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    env::var("AIPM_OPENAI_URL")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                })
+                .unwrap_or_else(|| default_url.to_string())
         };
 
         let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
@@ -141,7 +186,8 @@ impl AiRuntime {
             30
         });
 
-        let cfg = OpenAiConfig {
+        let cfg = LlmConfig {
+            provider,
             api_url,
             model,
             api_key: key,
@@ -174,19 +220,97 @@ impl AiRuntime {
     }
 }
 
-fn worker_loop(cfg: OpenAiConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResult>) {
+fn worker_loop(cfg: LlmConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResult>) {
     for job in job_rx {
-        let result = enrich_with_openai(&cfg, &job);
+        let result = enrich_task(&cfg, &job);
         let _ = result_tx.send(result);
     }
 }
 
-fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
+/// Send a system+user prompt to the configured LLM and return the text content.
+/// Handles OpenAI and Anthropic API formats.
+fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String> {
+    let body = match cfg.provider {
+        Provider::OpenAi => json!({
+            "model": cfg.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
+        }),
+        Provider::Anthropic => json!({
+            "model": cfg.model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [
+                {"role": "user", "content": user}
+            ]
+        }),
+    };
+
+    let mut req = ureq::post(&cfg.api_url)
+        .set("Content-Type", "application/json")
+        .timeout(cfg.timeout);
+
+    req = match cfg.provider {
+        Provider::OpenAi => req.set("Authorization", &format!("Bearer {}", cfg.api_key)),
+        Provider::Anthropic => req
+            .set("x-api-key", &cfg.api_key)
+            .set("anthropic-version", "2023-06-01"),
+    };
+
+    let resp = req.send_string(&body.to_string());
+
+    let text = match resp {
+        Ok(r) => r
+            .into_string()
+            .map_err(|err| format!("AI response read failed: {err}"))?,
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            return Err(format!("AI HTTP {}: {}", code, truncate(&body, 200)));
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return Err(format!("AI transport error: {t}"));
+        }
+    };
+
+    // Extract the assistant's text content from the response.
+    match cfg.provider {
+        Provider::OpenAi => {
+            let chat: ChatResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            Ok(chat
+                .choices
+                .first()
+                .and_then(|c| c.message.content.as_deref())
+                .unwrap_or("")
+                .to_string())
+        }
+        Provider::Anthropic => {
+            let resp: AnthropicResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            Ok(resp
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if b.block_type == "text" {
+                        b.text.as_deref()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(""))
+        }
+    }
+}
+
+fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
     if let Some(raw_input) = &job.triage_input {
-        return triage_with_openai(cfg, job, raw_input);
+        return triage_task(cfg, job, raw_input);
     }
     if let Some(instruction) = &job.edit_instruction {
-        return edit_task_with_openai(cfg, job, instruction);
+        return edit_task(cfg, job, instruction);
     }
 
     let system = "You are an expert AI project manager. Output ONLY valid JSON. No markdown.";
@@ -214,74 +338,20 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
         context_lines
     );
 
-    let body = json!({
-        "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ]
-    });
-
-    let resp = ureq::post(&cfg.api_url)
-        .set("Authorization", &format!("Bearer {}", cfg.api_key))
-        .set("Content-Type", "application/json")
-        .timeout(cfg.timeout)
-        .send_string(&body.to_string());
-
-    let text = match resp {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(err) => {
-                return AiResult {
-                    task_id: job.task_id,
-                    update: TaskUpdate::default(),
-                    error: Some(format!("AI response read failed: {err}")),
-                    triage_action: None,
-                    sub_task_specs: Vec::new(),
-                }
-            }
-        },
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            return AiResult {
-                task_id: job.task_id,
-                update: TaskUpdate::default(),
-                error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
-                triage_action: None,
-                sub_task_specs: Vec::new(),
-            };
-        }
-        Err(ureq::Error::Transport(t)) => {
-            return AiResult {
-                task_id: job.task_id,
-                update: TaskUpdate::default(),
-                error: Some(format!("AI transport error: {t}")),
-                triage_action: None,
-                sub_task_specs: Vec::new(),
-            };
-        }
-    };
-
-    let chat: ChatResponse = match serde_json::from_str(&text) {
-        Ok(v) => v,
+    let content = match call_llm(cfg, system, &user) {
+        Ok(text) => text,
         Err(err) => {
             return AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
-                error: Some(format!("AI JSON parse failed: {err}")),
+                error: Some(err),
                 triage_action: None,
                 sub_task_specs: Vec::new(),
             }
         }
     };
 
-    let content = chat
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("");
-
-    let json_text = extract_json_object(content).unwrap_or_else(|| content.trim().to_string());
+    let json_text = extract_json_object(&content).unwrap_or_else(|| content.trim().to_string());
 
     let enriched: Enriched = match serde_json::from_str(&json_text) {
         Ok(v) => v,
@@ -291,7 +361,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
                 update: TaskUpdate::default(),
                 error: Some(format!(
                     "AI output not valid JSON ({err}): {}",
-                    truncate(content, 200)
+                    truncate(&content, 200)
                 )),
                 triage_action: None,
                 sub_task_specs: Vec::new(),
@@ -381,6 +451,18 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
+struct AnthropicResponse {
+    content: Vec<AnthropicContentBlock>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct Enriched {
     title: Option<String>,
     bucket: Option<String>,
@@ -424,7 +506,7 @@ fn short_id(id: Uuid) -> String {
     id.to_string().chars().take(8).collect::<String>()
 }
 
-fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> AiResult {
+fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
     let system = "You are an expert AI project manager. Modify the given task based on the user instruction. Output ONLY valid JSON. No markdown.";
 
     let snapshot = job.task_snapshot.as_deref().unwrap_or("");
@@ -446,74 +528,20 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
         context_lines
     );
 
-    let body = json!({
-        "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ]
-    });
-
-    let resp = ureq::post(&cfg.api_url)
-        .set("Authorization", &format!("Bearer {}", cfg.api_key))
-        .set("Content-Type", "application/json")
-        .timeout(cfg.timeout)
-        .send_string(&body.to_string());
-
-    let text = match resp {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(err) => {
-                return AiResult {
-                    task_id: job.task_id,
-                    update: TaskUpdate::default(),
-                    error: Some(format!("AI response read failed: {err}")),
-                    triage_action: None,
-                    sub_task_specs: Vec::new(),
-                }
-            }
-        },
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            return AiResult {
-                task_id: job.task_id,
-                update: TaskUpdate::default(),
-                error: Some(format!("AI HTTP {}: {}", code, truncate(&body, 200))),
-                triage_action: None,
-                sub_task_specs: Vec::new(),
-            };
-        }
-        Err(ureq::Error::Transport(t)) => {
-            return AiResult {
-                task_id: job.task_id,
-                update: TaskUpdate::default(),
-                error: Some(format!("AI transport error: {t}")),
-                triage_action: None,
-                sub_task_specs: Vec::new(),
-            };
-        }
-    };
-
-    let chat: ChatResponse = match serde_json::from_str(&text) {
-        Ok(v) => v,
+    let content = match call_llm(cfg, system, &user) {
+        Ok(text) => text,
         Err(err) => {
             return AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate::default(),
-                error: Some(format!("AI JSON parse failed: {err}")),
+                error: Some(err),
                 triage_action: None,
                 sub_task_specs: Vec::new(),
             }
         }
     };
 
-    let content = chat
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("");
-
-    let json_text = extract_json_object(content).unwrap_or_else(|| content.trim().to_string());
+    let json_text = extract_json_object(&content).unwrap_or_else(|| content.trim().to_string());
 
     let enriched: Enriched = match serde_json::from_str(&json_text) {
         Ok(v) => v,
@@ -523,7 +551,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
                 update: TaskUpdate::default(),
                 error: Some(format!(
                     "AI output not valid JSON ({err}): {}",
-                    truncate(content, 200)
+                    truncate(&content, 200)
                 )),
                 triage_action: None,
                 sub_task_specs: Vec::new(),
@@ -671,7 +699,7 @@ struct SubTaskEnriched {
     depends_on: Option<Vec<usize>>,
 }
 
-fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiResult {
+fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
     let system = "You are an expert AI project manager. Analyze the user's message and decide whether to CREATE a new task, UPDATE an existing one, DELETE an existing one, BULK UPDATE multiple tasks, or DECOMPOSE a task into smaller sub-issues. Output ONLY valid JSON. No markdown.";
 
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
@@ -682,14 +710,6 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
         triage_ctx
     );
 
-    let body = json!({
-        "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ]
-    });
-
     let err_result = |msg: String| AiResult {
         task_id: job.task_id,
         update: TaskUpdate::default(),
@@ -698,45 +718,19 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
         sub_task_specs: Vec::new(),
     };
 
-    let resp = ureq::post(&cfg.api_url)
-        .set("Authorization", &format!("Bearer {}", cfg.api_key))
-        .set("Content-Type", "application/json")
-        .timeout(cfg.timeout)
-        .send_string(&body.to_string());
-
-    let text = match resp {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(err) => return err_result(format!("AI response read failed: {err}")),
-        },
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            return err_result(format!("AI HTTP {}: {}", code, truncate(&body, 200)));
-        }
-        Err(ureq::Error::Transport(t)) => {
-            return err_result(format!("AI transport error: {t}"));
-        }
+    let content = match call_llm(cfg, system, &user) {
+        Ok(text) => text,
+        Err(err) => return err_result(err),
     };
 
-    let chat: ChatResponse = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(err) => return err_result(format!("AI JSON parse failed: {err}")),
-    };
-
-    let content = chat
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("");
-
-    let json_text = extract_json_object(content).unwrap_or_else(|| content.trim().to_string());
+    let json_text = extract_json_object(&content).unwrap_or_else(|| content.trim().to_string());
 
     let mut triaged: TriageEnriched = match serde_json::from_str(&json_text) {
         Ok(v) => v,
         Err(err) => {
             return err_result(format!(
                 "AI output not valid JSON ({err}): {}",
-                truncate(content, 200)
+                truncate(&content, 200)
             ));
         }
     };

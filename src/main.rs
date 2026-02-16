@@ -31,6 +31,12 @@ enum Tab {
 }
 
 const MODEL_OPTIONS: &[&str] = &[
+    // Anthropic
+    "claude-opus-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    // OpenAI
     "gpt-5.2-chat-latest",
     "gpt-5.2",
     "gpt-5.1-chat-latest",
@@ -552,6 +558,13 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Enter => {
             if app.input.trim().eq_ignore_ascii_case("exit") {
                 return Ok(true);
+            }
+
+            // Reload tasks from disk before processing input to pick up external changes.
+            if let Some(storage) = &app.storage {
+                if let Ok(fresh) = storage.reload_tasks() {
+                    app.tasks = fresh;
+                }
             }
 
             // @ prefix: edit the selected task via AI.
@@ -3858,7 +3871,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
         Some(ai) => ai,
         None => {
             eprintln!(
-                "Error: AI not configured. Set OPENAI_API_KEY or configure via the Settings tab."
+                "Error: AI not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY, or configure via the Settings tab."
             );
             std::process::exit(1);
         }
@@ -4303,13 +4316,11 @@ fn print_help() {
     println!("  p:low|medium|high|critical (set priority, e.g. p:high)");
     println!();
     println!("AI:");
-    println!("  Optional OpenAI enrichment (async). Set OPENAI_API_KEY to enable.");
-    println!("  AIPM_AI=off|auto|openai           (default: auto)");
-    println!("  AIPM_OPENAI_MODEL=...             (default: gpt-4o-mini)");
-    println!(
-        "  AIPM_OPENAI_URL=...               (default: https://api.openai.com/v1/chat/completions)"
-    );
-    println!("  AIPM_OPENAI_TIMEOUT_SECS=30       (default: 30)");
+    println!("  Supports OpenAI and Anthropic models. Set the appropriate API key to enable.");
+    println!("  OPENAI_API_KEY=...                (for gpt-* models)");
+    println!("  ANTHROPIC_API_KEY=...             (for claude-* models)");
+    println!("  AIPM_MODEL=...                    (default: gpt-5.2-chat-latest)");
+    println!("  AIPM_API_URL=...                  (auto-detected from model)");
     println!();
     println!("Data:");
     println!("  Stored at $AIPM_DATA_DIR/tasks.json if set, otherwise in your OS data dir.");

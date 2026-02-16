@@ -11,3 +11,4 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 unicode-width = "0.1"
 ureq = { version = "2", features = ["json"] }
+fracturedjson = "0.1"
