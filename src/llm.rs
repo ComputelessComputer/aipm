@@ -677,7 +677,7 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
 
     let user = format!(
-        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent. Apply the following rules IN ORDER OF PRIORITY (highest first):\n\n*** HIGHEST PRIORITY — DECOMPOSE ***\nIf the user asks to \"break down\", \"decompose\", \"split\", \"create sub-issues\", \"create subtasks\", \"break into smaller tasks\", or ANY similar request to divide work into parts — you MUST use action \"decompose\".\n- Set target_id to the id_prefix of the existing task being decomposed (if one is referenced or can be inferred).\n- Return a \"subtasks\" array with each subtask having: title, description, bucket, priority, progress, due_date, and depends_on.\n- depends_on is an array of 0-based indices into the subtasks array. Set dependencies to reflect natural execution order.\n- NEVER put sub-task breakdowns, numbered lists of sub-tasks, or step-by-step plans into the \"description\" field. That is WRONG. Sub-tasks MUST be actual entries in the \"subtasks\" array.\n- When decomposing, inherit the parent task's bucket and priority for subtasks unless the user specifies otherwise.\n\n*** OTHER ACTIONS ***\n- If the user wants to remove/delete/cancel a task, use action \"delete\" with target_id.\n- If the message affects MULTIPLE existing tasks (e.g. \"update all titles\", \"mark everything in Admin as done\"), use action \"bulk_update\" with target_ids (list of id_prefix values, or [\"all\"] for every task).\n- If the message is about a SINGLE existing task (status change, field update, clarification — NOT decomposition), use action \"update\" with target_id.\n- If it's a genuinely new piece of work that is small/simple enough, CREATE a single task.\n\n*** GENERAL RULES ***\n- For delete: do NOT change any fields, just set action and target_id.\n- Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\" | \"delete\" | \"bulk_update\" | \"decompose\",\n  \"target_id\": \"id_prefix\" | null,\n  \"target_ids\": [\"id_prefix\", ...] | [\"all\"] | null,\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [\n    {{\n      \"title\": string,\n      \"description\": string,\n      \"bucket\": \"Team\"|\"John\"|\"Admin\",\n      \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n      \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n      \"due_date\": \"YYYY-MM-DD\" | null,\n      \"depends_on\": [0, 1, ...]\n    }}, ...\n  ] | null\n}}\n",
+        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent. Apply the following rules IN ORDER OF PRIORITY (highest first):\n\n*** HIGHEST PRIORITY — DECOMPOSE ***\nIf the user asks to \"break down\", \"decompose\", \"split\", \"create sub-issues\", \"create subtasks\", \"break into smaller tasks\", or ANY similar request to divide work into parts — you MUST use action \"decompose\".\n- Set target_id to the id_prefix of the existing task being decomposed (if one is referenced or can be inferred).\n- Return a \"subtasks\" array with each subtask having: title, description, bucket, priority, progress, due_date, and depends_on.\n- depends_on is an array of 0-based indices into the subtasks array. Set dependencies to reflect natural execution order.\n- NEVER put sub-task breakdowns, numbered lists of sub-tasks, or step-by-step plans into the \"description\" field. That is WRONG. Sub-tasks MUST be actual entries in the \"subtasks\" array.\n- When decomposing, inherit the parent task's bucket and priority for subtasks unless the user specifies otherwise.\n\n*** UPDATE WITH SUBTASKS ***\nWhen updating an existing task, if the user's message contains multiple items, links, or pieces of work that naturally map to individual sub-tasks — use action \"update\" with target_id AND include a \"subtasks\" array. For example: updating a \"review PRs\" task with a list of PR links should create one subtask per PR. The subtasks array format is identical to decompose.\n\n*** OTHER ACTIONS ***\n- If the user wants to remove/delete/cancel a task, use action \"delete\" with target_id.\n- If the message affects MULTIPLE existing tasks (e.g. \"update all titles\", \"mark everything in Admin as done\"), use action \"bulk_update\" with target_ids (list of id_prefix values, or [\"all\"] for every task).\n- If the message is about a SINGLE existing task (status change, field update, clarification — NOT decomposition), use action \"update\" with target_id. You MAY include a \"subtasks\" array if the update implies sub-work items.\n- If it's a genuinely new piece of work that is small/simple enough, CREATE a single task.\n\n*** GENERAL RULES ***\n- For delete: do NOT change any fields, just set action and target_id.\n- Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\" | \"delete\" | \"bulk_update\" | \"decompose\",\n  \"target_id\": \"id_prefix\" | null,\n  \"target_ids\": [\"id_prefix\", ...] | [\"all\"] | null,\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [\n    {{\n      \"title\": string,\n      \"description\": string,\n      \"bucket\": \"Team\"|\"John\"|\"Admin\",\n      \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n      \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n      \"due_date\": \"YYYY-MM-DD\" | null,\n      \"depends_on\": [0, 1, ...]\n    }}, ...\n  ] | null\n}}\n",
         raw_input,
         triage_ctx
     );
@@ -731,7 +731,7 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
 
     let json_text = extract_json_object(content).unwrap_or_else(|| content.trim().to_string());
 
-    let triaged: TriageEnriched = match serde_json::from_str(&json_text) {
+    let mut triaged: TriageEnriched = match serde_json::from_str(&json_text) {
         Ok(v) => v,
         Err(err) => {
             return err_result(format!(
@@ -742,6 +742,43 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
     };
 
     let action_str = triaged.action.as_deref().unwrap_or("create");
+    let parsed_subtasks: Vec<SubTaskSpec> = triaged
+        .subtasks
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|st| {
+            let title = st
+                .title
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            Some(SubTaskSpec {
+                title: truncate(&title, 200).to_string(),
+                description: st
+                    .description
+                    .as_deref()
+                    .map(|s| truncate(s.trim(), 400).to_string())
+                    .unwrap_or_default(),
+                bucket: st.bucket.as_deref().and_then(parse_bucket),
+                priority: st
+                    .priority
+                    .as_deref()
+                    .and_then(|s| parse_priority(s.trim())),
+                progress: st
+                    .progress
+                    .as_deref()
+                    .and_then(|s| parse_progress(s.trim())),
+                due_date: st
+                    .due_date
+                    .as_deref()
+                    .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                depends_on: st.depends_on.unwrap_or_default(),
+            })
+        })
+        .take(12)
+        .collect();
     let triage_action = match action_str {
         "update" => {
             if let Some(target) = triaged
@@ -784,53 +821,17 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
             }
         }
         "decompose" => {
-            let specs: Vec<SubTaskSpec> = triaged
-                .subtasks
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|st| {
-                    let title = st
-                        .title
-                        .as_deref()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())?
-                        .to_string();
-                    Some(SubTaskSpec {
-                        title: truncate(&title, 200).to_string(),
-                        description: st
-                            .description
-                            .as_deref()
-                            .map(|s| truncate(s.trim(), 400).to_string())
-                            .unwrap_or_default(),
-                        bucket: st.bucket.as_deref().and_then(parse_bucket),
-                        priority: st
-                            .priority
-                            .as_deref()
-                            .and_then(|s| parse_priority(s.trim())),
-                        progress: st
-                            .progress
-                            .as_deref()
-                            .and_then(|s| parse_progress(s.trim())),
-                        due_date: st
-                            .due_date
-                            .as_deref()
-                            .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
-                        depends_on: st.depends_on.unwrap_or_default(),
-                    })
-                })
-                .take(12) // cap at 12 subtasks
-                .collect();
             let decompose_target = triaged
                 .target_id
                 .as_deref()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            if specs.is_empty() {
+            if parsed_subtasks.is_empty() {
                 Some(TriageAction::Create)
             } else {
                 Some(TriageAction::Decompose {
                     target_id: decompose_target,
-                    specs,
+                    specs: parsed_subtasks.clone(),
                 })
             }
         }
@@ -905,12 +906,18 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
         update.dependencies = out;
     }
 
+    // For "update" action, carry parsed subtasks so main.rs can create child tasks.
+    let sub_task_specs = match &triage_action {
+        Some(TriageAction::Update(_)) => parsed_subtasks,
+        _ => Vec::new(),
+    };
+
     AiResult {
         task_id: job.task_id,
         update,
         error: None,
         triage_action,
-        sub_task_specs: Vec::new(),
+        sub_task_specs,
     }
 }
 

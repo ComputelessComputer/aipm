@@ -1572,12 +1572,76 @@ fn poll_ai(app: &mut App) -> bool {
                         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
                             let now = Utc::now();
                             apply_update(task, &result.update, &deps, now);
+                            changed = true;
+                        }
+                        // Create sub-tasks if the update response includes them.
+                        if !result.sub_task_specs.is_empty() {
+                            let now = Utc::now();
+                            let parent_bucket = app
+                                .tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .map(|t| t.bucket)
+                                .unwrap_or(Bucket::Team);
+                            let count = result.sub_task_specs.len();
+                            let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                            for spec in result.sub_task_specs.iter() {
+                                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                                let mut task = Task::new(bucket, spec.title.clone(), now);
+                                task.parent_id = Some(id);
+                                task.description = spec.description.clone();
+                                if let Some(p) = spec.priority {
+                                    task.priority = p;
+                                }
+                                if let Some(prog) = spec.progress {
+                                    task.set_progress(prog, now);
+                                }
+                                if let Some(due) = spec.due_date {
+                                    task.due_date = Some(due);
+                                }
+                                new_ids.push(task.id);
+                                app.tasks.push(task);
+                            }
+                            for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                                if spec.depends_on.is_empty() {
+                                    continue;
+                                }
+                                let task_id = new_ids[i];
+                                let dep_ids: Vec<Uuid> = spec
+                                    .depends_on
+                                    .iter()
+                                    .filter_map(|&idx| new_ids.get(idx).copied())
+                                    .filter(|&dep_id| dep_id != task_id)
+                                    .collect();
+                                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                                    task.dependencies = dep_ids;
+                                }
+                            }
+                            let title = app
+                                .tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .map(|t| t.title.clone())
+                                .unwrap_or_default();
                             app.status = Some((
-                                format!("AI updated: {}", task.title),
+                                format!(
+                                    "AI updated: {} (+{} sub-task{})",
+                                    title,
+                                    count,
+                                    if count == 1 { "" } else { "s" }
+                                ),
                                 Instant::now(),
                                 false,
                             ));
-                            changed = true;
+                        } else {
+                            let title = app
+                                .tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .map(|t| t.title.clone())
+                                .unwrap_or_default();
+                            app.status =
+                                Some((format!("AI updated: {}", title), Instant::now(), false));
                         }
                     } else {
                         app.status = Some((
@@ -3877,6 +3941,51 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             apply_update(task, &result.update, &deps, now);
                             println!("  ~ Updated \"{}\"", task.title);
                             total_changes += 1;
+                        }
+                        // Create sub-tasks if the update response includes them.
+                        if !result.sub_task_specs.is_empty() {
+                            let now = Utc::now();
+                            let parent_bucket = tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .map(|t| t.bucket)
+                                .unwrap_or(Bucket::Team);
+                            let count = result.sub_task_specs.len();
+                            let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                            for spec in result.sub_task_specs.iter() {
+                                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                                let mut task = Task::new(bucket, spec.title.clone(), now);
+                                task.parent_id = Some(id);
+                                task.description = spec.description.clone();
+                                if let Some(p) = spec.priority {
+                                    task.priority = p;
+                                }
+                                if let Some(prog) = spec.progress {
+                                    task.set_progress(prog, now);
+                                }
+                                if let Some(due) = spec.due_date {
+                                    task.due_date = Some(due);
+                                }
+                                new_ids.push(task.id);
+                                println!("    ↳ Created sub-task \"{}\"", task.title);
+                                tasks.push(task);
+                            }
+                            for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                                if spec.depends_on.is_empty() {
+                                    continue;
+                                }
+                                let task_id = new_ids[i];
+                                let dep_ids: Vec<Uuid> = spec
+                                    .depends_on
+                                    .iter()
+                                    .filter_map(|&idx| new_ids.get(idx).copied())
+                                    .filter(|&dep_id| dep_id != task_id)
+                                    .collect();
+                                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                                    task.dependencies = dep_ids;
+                                }
+                            }
+                            total_changes += count as u32;
                         }
                     } else {
                         eprintln!("  Warning: task {} not found", prefix);
