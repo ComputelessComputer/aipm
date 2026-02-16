@@ -1,5 +1,7 @@
 # aipm
 
+<img width="1608" height="1049" alt="image" src="https://github.com/user-attachments/assets/7f352692-9b9e-4285-9a4f-1ebbc9d650c3" />
+
 A terminal-based AI-powered project manager built in Rust.
 
 ## Features
