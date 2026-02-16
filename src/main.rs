@@ -2347,8 +2347,6 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     }
 
     let y_cards_start = y_body_top + 3;
-    let cards_area_height = y_status.saturating_sub(y_cards_start) as usize;
-    let visible = visible_cards(cards_area_height).max(1);
 
     for (i, bucket) in Bucket::ALL.iter().enumerate() {
         render_bucket_column(
@@ -2358,7 +2356,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
             col_x[i] as u16,
             y_cards_start,
             col_width,
-            visible,
+            y_status,
         )?;
     }
 
@@ -2452,10 +2450,9 @@ fn render_bucket_column(
     x: u16,
     y: u16,
     width: usize,
-    visible: usize,
+    max_y: u16,
 ) -> io::Result<()> {
-    const CARD_LINES: usize = 7;
-    const CARD_HEIGHT: usize = 8;
+    const CARD_LINES: usize = 6; // lines 0-5 (title, desc×2, separator, progress, due)
 
     let indices = bucket_task_indices(&app.tasks, bucket);
     let scroll = match bucket {
@@ -2465,14 +2462,19 @@ fn render_bucket_column(
     };
 
     let inner_w = width.saturating_sub(2); // 1 char padding each side
+    let mut y_cursor = y;
 
-    for (pos, &idx) in indices.iter().enumerate().skip(scroll).take(visible) {
+    for (_pos, &idx) in indices.iter().enumerate().skip(scroll) {
+        if y_cursor + CARD_LINES as u16 + 1 > max_y {
+            break;
+        }
+
         let task = &app.tasks[idx];
         let is_selected = app.focus == Focus::Board
             && bucket == app.selected_bucket
             && app.selected_task_id == Some(task.id);
 
-        let card_top = y + ((pos - scroll) * CARD_HEIGHT) as u16;
+        let card_top = y_cursor;
 
         // Word-wrap description into max 2 lines.
         let desc_text = if task.description.trim().is_empty() {
@@ -2526,9 +2528,8 @@ fn render_bucket_column(
         // 1: desc line 1 (grey)
         // 2: desc line 2 (grey)
         // 3: separator
-        // 4: progress │ priority (dim)
-        // 5: due │ deps (dim)
-        // 6: blank bottom padding
+        // 4: progress │ priority (colored gauge)
+        // 5: due │ deps/sub-count (dim)
         for line_idx in 0..CARD_LINES {
             let y_line = card_top + line_idx as u16;
             queue!(stdout, MoveTo(x, y_line))?;
@@ -2539,6 +2540,29 @@ fn render_bucket_column(
                     SetForegroundColor(Color::Black),
                     SetBackgroundColor(Color::White)
                 )?;
+            }
+
+            // Colored gauge for progress line (non-selected only).
+            if line_idx == 4 && !is_selected {
+                let gc = progress_color(task.progress);
+                let gauge_str = format!(" {}", gauge);
+                let rest = format!(" {} │ {}", task.progress.title(), task.priority.title());
+                let max_rest = width.saturating_sub(gauge_str.width());
+                let rest_clamped = clamp_text(&rest, max_rest);
+                queue!(
+                    stdout,
+                    SetForegroundColor(gc),
+                    Print(&gauge_str),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(&rest_clamped),
+                )?;
+                let used = gauge_str.width() + rest_clamped.width();
+                let pad = width.saturating_sub(used);
+                if pad > 0 {
+                    queue!(stdout, Print(" ".repeat(pad)))?;
+                }
+                queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                continue;
             }
 
             let content = match line_idx {
@@ -2574,10 +2598,7 @@ fn render_bucket_column(
                     format!(" {}", "─".repeat(inner_w))
                 }
                 4 => {
-                    // Progress │ Priority.
-                    if !is_selected {
-                        queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-                    }
+                    // Progress │ Priority (selected: single color).
                     format!(" {}", table_row1)
                 }
                 5 => {
@@ -2599,12 +2620,71 @@ fn render_bucket_column(
             )?;
         }
 
-        // Spacer line
-        queue!(
-            stdout,
-            MoveTo(x, card_top + CARD_LINES as u16),
-            Print(pad_to_width("", width))
-        )?;
+        y_cursor += CARD_LINES as u16;
+
+        // Render sub-issues below the card.
+        if has_children {
+            let max_shown = 3usize;
+            for &child_idx in child_indices.iter().take(max_shown) {
+                if y_cursor >= max_y {
+                    break;
+                }
+                let child = &app.tasks[child_idx];
+                let icon = match child.progress {
+                    Progress::Done => "\u{25cf}",
+                    Progress::InProgress => "\u{25d0}",
+                    Progress::Todo => "\u{25cb}",
+                    Progress::Backlog => "\u{25cc}",
+                };
+                let prefix_str = " \u{21b3} ";
+                let title_max = width.saturating_sub(prefix_str.width() + icon.width() + 1);
+                let title_text = clamp_text(&child.title, title_max);
+                queue!(
+                    stdout,
+                    MoveTo(x, y_cursor),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(prefix_str),
+                    SetForegroundColor(progress_color(child.progress)),
+                    Print(icon),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(format!(" {}", title_text)),
+                )?;
+                let used = prefix_str.width() + icon.width() + 1 + title_text.width();
+                let pad = width.saturating_sub(used);
+                if pad > 0 {
+                    queue!(stdout, Print(" ".repeat(pad)))?;
+                }
+                queue!(stdout, ResetColor)?;
+                y_cursor += 1;
+            }
+            if child_indices.len() > max_shown && y_cursor < max_y {
+                let more_text = format!("    +{} more", child_indices.len() - max_shown);
+                queue!(
+                    stdout,
+                    MoveTo(x, y_cursor),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(pad_to_width(&clamp_text(&more_text, width), width)),
+                    ResetColor,
+                )?;
+                y_cursor += 1;
+            }
+        } else {
+            // Blank padding line for cards without children.
+            if y_cursor < max_y {
+                queue!(stdout, MoveTo(x, y_cursor), Print(pad_to_width("", width)))?;
+                y_cursor += 1;
+            }
+        }
+
+        // Spacer line.
+        if y_cursor < max_y {
+            queue!(
+                stdout,
+                MoveTo(x, y_cursor),
+                Print(pad_to_width("", width))
+            )?;
+            y_cursor += 1;
+        }
     }
 
     // If empty, show hint
@@ -3031,17 +3111,21 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         if is_active_col {
             queue!(
                 stdout,
+                SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
                 SetAttribute(Attribute::Underlined),
                 Print(clamp_text(stage.title(), col_width)),
-                SetAttribute(Attribute::Reset)
+                SetAttribute(Attribute::Reset),
+                ResetColor
             )?;
         } else {
             queue!(
                 stdout,
+                SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
                 Print(clamp_text(stage.title(), col_width)),
-                SetAttribute(Attribute::Reset)
+                SetAttribute(Attribute::Reset),
+                ResetColor
             )?;
         }
 
@@ -3727,6 +3811,15 @@ fn progress_gauge(progress: Progress) -> String {
         }
     }
     out
+}
+
+fn progress_color(progress: Progress) -> Color {
+    match progress {
+        Progress::Done => Color::Green,
+        Progress::InProgress => Color::Yellow,
+        Progress::Todo => Color::Blue,
+        Progress::Backlog => Color::DarkGrey,
+    }
 }
 
 fn wrap_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {
