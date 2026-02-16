@@ -108,6 +108,7 @@ impl EditField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsField {
+    OwnerName,
     AiEnabled,
     ApiKey,
     Model,
@@ -116,7 +117,8 @@ enum SettingsField {
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 5] = [
+    const ALL: [SettingsField; 6] = [
+        SettingsField::OwnerName,
         SettingsField::AiEnabled,
         SettingsField::ApiKey,
         SettingsField::Model,
@@ -126,12 +128,28 @@ impl SettingsField {
 
     fn label(self) -> &'static str {
         match self {
+            SettingsField::OwnerName => "Owner Name",
             SettingsField::AiEnabled => "AI Enabled",
             SettingsField::ApiKey => "API Key",
             SettingsField::Model => "Model",
             SettingsField::ApiUrl => "API URL",
             SettingsField::Timeout => "Timeout (sec)",
         }
+    }
+}
+
+fn bucket_display_title(bucket: Bucket, owner_name: &str) -> String {
+    match bucket {
+        Bucket::Team => "Team".to_string(),
+        Bucket::John => {
+            let name = if owner_name.trim().is_empty() {
+                "John"
+            } else {
+                owner_name.trim()
+            };
+            format!("{}-only", name)
+        }
+        Bucket::Admin => "Admin".to_string(),
     }
 }
 
@@ -657,7 +675,10 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                     app.tasks.push(task);
                     app.status = Some((
-                        format!("Created in {}", hints.bucket.title()),
+                        format!(
+                            "Created in {}",
+                            bucket_display_title(hints.bucket, &app.settings.owner_name)
+                        ),
                         Instant::now(),
                         false,
                     ));
@@ -895,7 +916,7 @@ fn load_edit_buf(app: &mut App) {
     app.edit_buf = match app.edit_field {
         EditField::Title => task.title.clone(),
         EditField::Description => task.description.clone(),
-        EditField::Bucket => task.bucket.title().to_string(),
+        EditField::Bucket => bucket_display_title(task.bucket, &app.settings.owner_name),
         EditField::Progress => task.progress.title().to_string(),
         EditField::Priority => task.priority.title().to_string(),
         EditField::DueDate => task
@@ -1377,6 +1398,10 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.settings_field = SettingsField::ALL[next];
         }
         KeyCode::Enter | KeyCode::Char(' ') => match app.settings_field {
+            SettingsField::OwnerName => {
+                app.settings_buf = app.settings.owner_name.clone();
+                app.settings_editing = true;
+            }
             SettingsField::AiEnabled => {
                 app.settings.enabled = !app.settings.enabled;
                 persist_settings(app);
@@ -1449,6 +1474,9 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Enter => {
             match app.settings_field {
+                SettingsField::OwnerName => {
+                    app.settings.owner_name = app.settings_buf.trim().to_string();
+                }
                 SettingsField::ApiKey => app.settings.api_key = app.settings_buf.clone(),
                 SettingsField::Model => app.settings.model = app.settings_buf.clone(),
                 SettingsField::ApiUrl => app.settings.api_url = app.settings_buf.clone(),
@@ -2201,7 +2229,10 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     for (i, bucket) in Bucket::ALL.iter().enumerate() {
         let x = col_x[i] as u16;
 
-        let title = format!(" {}", bucket.title());
+        let title = format!(
+            " {}",
+            bucket_display_title(*bucket, &app.settings.owner_name)
+        );
         queue!(
             stdout,
             MoveTo(x, y_body_top),
@@ -2930,7 +2961,11 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
             let line = if task.is_child() {
                 format!(" ↳ {}", task.title)
             } else {
-                format!(" {} · {}", task.bucket.title(), task.title)
+                format!(
+                    " {} · {}",
+                    bucket_display_title(task.bucket, &app.settings.owner_name),
+                    task.title
+                )
             };
             queue!(stdout, MoveTo(x, list_top + row as u16))?;
             if is_selected {
@@ -2981,6 +3016,13 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         let is_current = *field == app.settings_field;
 
         let value = match field {
+            SettingsField::OwnerName => {
+                if app.settings.owner_name.trim().is_empty() {
+                    "John (default)".to_string()
+                } else {
+                    app.settings.owner_name.clone()
+                }
+            }
             SettingsField::AiEnabled => {
                 if app.settings.enabled {
                     "On".to_string()
@@ -3462,7 +3504,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 
         let value = match field {
             EditField::Title => task.title.clone(),
-            EditField::Bucket => task.bucket.title().to_string(),
+            EditField::Bucket => bucket_display_title(task.bucket, &app.settings.owner_name),
             EditField::Progress => {
                 format!(
                     "{} {}",
@@ -3801,7 +3843,11 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             &result.update.dependencies,
                         );
                     }
-                    println!("  + Created \"{}\" [{}]", task.title, task.bucket.title());
+                    println!(
+                        "  + Created \"{}\" [{}]",
+                        task.title,
+                        bucket_display_title(task.bucket, &settings.owner_name)
+                    );
                     tasks.push(task);
                     total_changes += 1;
                 }

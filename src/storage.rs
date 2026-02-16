@@ -14,6 +14,12 @@ pub struct AiSettings {
     pub model: String,
     pub api_url: String,
     pub timeout_secs: u64,
+    #[serde(default = "default_owner_name")]
+    pub owner_name: String,
+}
+
+fn default_owner_name() -> String {
+    "John".to_string()
 }
 
 impl Default for AiSettings {
@@ -24,6 +30,7 @@ impl Default for AiSettings {
             model: "gpt-5.2-chat-latest".to_string(),
             api_url: "https://api.openai.com/v1/chat/completions".to_string(),
             timeout_secs: 30,
+            owner_name: "John".to_string(),
         }
     }
 }
