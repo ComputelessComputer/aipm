@@ -229,6 +229,8 @@ struct App {
     input_history: Vec<String>,
     input_history_index: Option<usize>,
     input_saved: String,
+
+    at_autocomplete_selected: usize,
 }
 
 struct TerminalGuard;
@@ -326,6 +328,7 @@ fn main() -> io::Result<()> {
         input_history: Vec::new(),
         input_history_index: None,
         input_saved: String::new(),
+        at_autocomplete_selected: 0,
     };
 
     ensure_default_selection(&mut app);
@@ -372,12 +375,14 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
             let prev_confirm = app.confirm_delete_id;
             let prev_bucket_edit = app.bucket_edit_active;
             let prev_header_sel = app.bucket_header_selected;
+            let prev_at_ac = input_has_at_prefix(&app.input) && app.focus == Focus::Input;
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(app, key)? {
                         break;
                     }
                     needs_redraw = true;
+                    let cur_at_ac = input_has_at_prefix(&app.input) && app.focus == Focus::Input;
                     // Full clear when layout changes significantly.
                     if app.tab != prev_tab
                         || app.focus != prev_focus
@@ -385,6 +390,7 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
                         || app.confirm_delete_id != prev_confirm
                         || app.bucket_edit_active != prev_bucket_edit
                         || app.bucket_header_selected != prev_header_sel
+                        || prev_at_ac != cur_at_ac
                     {
                         needs_clear = true;
                     }
@@ -662,7 +668,84 @@ fn input_visible_window(input: &str, cursor_char: usize, max_width: usize) -> (S
     (out, cursor_offset)
 }
 
+/// Compute @ autocomplete completions from the current input.
+/// Active when input starts with `@` and the token after `@` has no space yet.
+fn at_completions(tasks: &[Task], input: &str) -> Vec<(String, String, String)> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('@') {
+        return Vec::new();
+    }
+    let after_at = &trimmed[1..];
+    if after_at.contains(' ') {
+        return Vec::new();
+    }
+    let query = after_at.to_ascii_lowercase();
+    let mut matches: Vec<(String, String, String)> = tasks
+        .iter()
+        .filter(|t| {
+            if query.is_empty() {
+                return true;
+            }
+            let short =
+                t.id.to_string()
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+            let title_lower = t.title.to_ascii_lowercase();
+            short.starts_with(&query) || title_lower.contains(&query)
+        })
+        .map(|t| {
+            let short = t.id.to_string().chars().take(8).collect::<String>();
+            (short, t.title.clone(), t.bucket.clone())
+        })
+        .collect();
+    matches.truncate(20);
+    matches
+}
+
+/// Check whether the input is in the @ prefix state (autocomplete eligible).
+fn input_has_at_prefix(input: &str) -> bool {
+    let t = input.trim_start();
+    t.starts_with('@') && !t[1..].contains(' ')
+}
+
 fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    // @ autocomplete interception.
+    let completions = at_completions(&app.tasks, &app.input);
+    if !completions.is_empty() {
+        match key.code {
+            KeyCode::Up => {
+                let len = completions.len();
+                if app.at_autocomplete_selected == 0 {
+                    app.at_autocomplete_selected = len - 1;
+                } else {
+                    app.at_autocomplete_selected -= 1;
+                }
+                return Ok(false);
+            }
+            KeyCode::Down => {
+                app.at_autocomplete_selected =
+                    (app.at_autocomplete_selected + 1) % completions.len();
+                return Ok(false);
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                let sel = app
+                    .at_autocomplete_selected
+                    .min(completions.len().saturating_sub(1));
+                let (short_id, _, _) = &completions[sel];
+                app.input = format!("@{} ", short_id);
+                app.input_cursor = app.input.chars().count();
+                app.at_autocomplete_selected = 0;
+                return Ok(false);
+            }
+            _ => {
+                // Reset selection when typing/editing.
+                app.at_autocomplete_selected = 0;
+            }
+        }
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.focus = Focus::Board;
@@ -3303,6 +3386,49 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         )),
         ResetColor
     )?;
+
+    // @ autocomplete dropdown.
+    if app.focus == Focus::Input {
+        let completions = at_completions(&app.tasks, &app.input);
+        if !completions.is_empty() {
+            const MAX_SHOW: usize = 8;
+            let max_dropdown = (y_sep_top as usize).saturating_sub(y_body_top as usize + 3);
+            let show = completions.len().min(MAX_SHOW).min(max_dropdown);
+            if show > 0 {
+                let sel = app
+                    .at_autocomplete_selected
+                    .min(completions.len().saturating_sub(1));
+                // Scroll window to keep selected visible.
+                let scroll = if sel >= show { sel - show + 1 } else { 0 };
+                for (draw_i, (short_id, title, bucket)) in
+                    completions.iter().enumerate().skip(scroll).take(show)
+                {
+                    let row_from_bottom = show - (draw_i - scroll) - 1;
+                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
+                    let label = format!(" {} {} [{}]", short_id, title, bucket);
+                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
+                    queue!(stdout, MoveTo(x_input, y_row))?;
+                    if draw_i == sel {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::White),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    } else {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::White),
+                            SetBackgroundColor(Color::DarkGrey),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    }
+                }
+            }
+        }
+    }
 
     // Cursor
     if app.focus == Focus::Input {
