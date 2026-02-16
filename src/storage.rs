@@ -50,7 +50,7 @@ impl Default for AiSettings {
             api_key: String::new(),
             model: "claude-sonnet-4-5".to_string(),
             api_url: String::new(),
-            timeout_secs: 30,
+            timeout_secs: 60,
             owner_name: "John".to_string(),
             show_backlog: true,
             show_todo: true,

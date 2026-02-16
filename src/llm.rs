@@ -196,7 +196,7 @@ impl AiRuntime {
         let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
             settings.timeout_secs
         } else {
-            30
+            60
         });
 
         let cfg = LlmConfig {
@@ -257,10 +257,12 @@ const MAX_RETRIES: u32 = 2;
 const RETRY_DELAYS: [u64; 2] = [1, 3];
 
 /// Execute `f` with up to MAX_RETRIES retries on transient failures.
-fn with_retry<T, F: Fn() -> Result<T, String>>(f: F) -> Result<T, String> {
+/// The closure receives the attempt number (0-based) so callers can
+/// increase timeouts on subsequent attempts.
+fn with_retry<T, F: Fn(u32) -> Result<T, String>>(f: F) -> Result<T, String> {
     let mut last_err = String::new();
     for attempt in 0..=MAX_RETRIES {
-        match f() {
+        match f(attempt) {
             Ok(val) => return Ok(val),
             Err(err) => {
                 if attempt < MAX_RETRIES && is_retryable(&err) {
@@ -448,11 +450,28 @@ fn strip_html_tags(html: &str) -> String {
     result
 }
 
+/// Compute a timeout that scales with prompt size so large requests
+/// (triage with many tasks, decompose, bulk updates) get more time.
+/// Adds ~10 s per 4 KiB of prompt, capped at 3× base (minimum 120 s).
+fn scaled_timeout(base: Duration, body: &serde_json::Value, attempt: u32) -> Duration {
+    let body_len = body.to_string().len();
+    let extra_secs = (body_len / 4096) as u64 * 10;
+    let total = base.as_secs() + extra_secs;
+    let cap = base.as_secs().saturating_mul(3).max(120);
+    let scaled = Duration::from_secs(total.min(cap));
+    // Bump 50 % per retry so a timed-out request gets a longer second chance.
+    scaled + Duration::from_secs(scaled.as_secs() * attempt as u64 / 2)
+}
+
 /// Send a raw HTTP request to the LLM and return the response body.
-fn send_llm_request(cfg: &LlmConfig, body: &serde_json::Value) -> Result<String, String> {
+fn send_llm_request(
+    cfg: &LlmConfig,
+    body: &serde_json::Value,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut req = ureq::post(&cfg.api_url)
         .set("Content-Type", "application/json")
-        .timeout(cfg.timeout);
+        .timeout(timeout);
 
     req = match cfg.provider {
         Provider::OpenAi => req.set("Authorization", &format!("Bearer {}", cfg.api_key)),
@@ -495,7 +514,10 @@ fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String>
         }),
     };
 
-    let text = with_retry(|| send_llm_request(cfg, &body))?;
+    let text = with_retry(|attempt| {
+        let timeout = scaled_timeout(cfg.timeout, &body, attempt);
+        send_llm_request(cfg, &body, timeout)
+    })?;
 
     match cfg.provider {
         Provider::OpenAi => {
@@ -557,7 +579,10 @@ fn call_llm_with_tools(
         }),
     };
 
-    let text = with_retry(|| send_llm_request(cfg, &body))?;
+    let text = with_retry(|attempt| {
+        let timeout = scaled_timeout(cfg.timeout, &body, attempt);
+        send_llm_request(cfg, &body, timeout)
+    })?;
 
     match cfg.provider {
         Provider::OpenAi => {
