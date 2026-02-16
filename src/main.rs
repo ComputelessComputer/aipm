@@ -413,10 +413,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_tabs_key(app, key);
     }
 
-    // Global quit from board focus.
-    if key.code == KeyCode::Char('q') && app.focus == Focus::Board {
-        return Ok(true);
-    }
 
     // Tab switching with 1/2/3/4 (not while typing in input).
     if app.focus != Focus::Input {
@@ -460,7 +456,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
 fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Left | KeyCode::Char('h') => {
             app.tab = app.tab.prev();
         }
@@ -518,7 +513,6 @@ fn sorted_timeline_tasks(tasks: &[Task]) -> Vec<usize> {
 
 fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
             return Ok(false);
@@ -666,7 +660,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
-            if app.input.trim().eq_ignore_ascii_case("exit") {
+        if app.input.trim().eq_ignore_ascii_case("/exit") {
                 return Ok(true);
             }
 
@@ -947,7 +941,6 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
 fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
             return Ok(false);
@@ -1302,7 +1295,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
             close_edit(app);
             ensure_default_selection(app);
         }
@@ -1455,7 +1448,6 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
 fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
             return Ok(false);
@@ -1599,7 +1591,6 @@ fn rebuild_ai(app: &mut App) {
 
 fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true),
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
             return Ok(false);
@@ -4849,6 +4840,7 @@ fn print_help() {
     println!("  p:low|medium|high|critical (set priority, e.g. p:high)");
     println!("  @<id> <instruction>      (AI-edit a specific task by ID prefix)");
     println!("  /clear                   (clear AI conversation context)");
+    println!("  /exit                    (quit the app)");
     println!();
     println!("AI:");
     println!("  Supports OpenAI and Anthropic models. Set the appropriate API key to enable.");

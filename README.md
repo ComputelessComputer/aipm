@@ -18,8 +18,8 @@ A terminal-based AI-powered project manager built in Rust.
 | Context | Key | Action |
 |---------|-----|--------|
 | Global | `Ctrl-C` | Quit |
-| Global | `q` | Quit (from board/tab focus) |
 | Global | `1/2/3/4` | Switch tabs |
+| Input | `/exit` | Quit |
 | Tab bar | `←/→` | Navigate tabs |
 | Tab bar | `Enter` | Enter selected tab |
 | Input | `Enter` | Create task |
