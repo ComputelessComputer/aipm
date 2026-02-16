@@ -670,6 +670,15 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 return Ok(true);
             }
 
+            // /clear: reset AI conversation context.
+            if app.input.trim().eq_ignore_ascii_case("/clear") {
+                app.chat_history.clear();
+                app.status = Some(("Context cleared".to_string(), Instant::now(), false));
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
             // Reload tasks from disk before processing input to pick up external changes.
             if let Some(storage) = &app.storage {
                 if let Ok(fresh) = storage.reload_tasks() {
@@ -677,84 +686,97 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 }
             }
 
-            // @ prefix: edit the selected task via AI.
+            // @ prefix: edit a specific task (by id) or the selected task via AI.
             if app.input.trim().starts_with('@') {
-                let instruction = app
+                let after_at = app
                     .input
                     .trim()
                     .strip_prefix('@')
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                if !instruction.is_empty() {
-                    // Detect decompose-intent instructions and route through triage.
-                    let lower = instruction.to_ascii_lowercase();
-                    let is_decompose = lower.contains("break down")
-                        || lower.contains("decompose")
-                        || lower.contains("sub-issue")
-                        || lower.contains("subissue")
-                        || lower.contains("sub-task")
-                        || lower.contains("subtask")
-                        || lower.contains("split into")
-                        || lower.contains("break into");
+                if !after_at.is_empty() {
+                    let (target_task_id, instruction) =
+                        resolve_at_mention(&app.tasks, &after_at, app.selected_task_id);
 
-                    if is_decompose {
-                        // Route through triage so decompose action can create real sub-tasks.
-                        if let Some(ai) = &app.ai {
-                            let context = build_ai_context(&app.tasks);
-                            let triage_ctx = build_triage_context(&app.tasks);
-                            app.last_triage_input = instruction.clone();
-                            ai.enqueue(llm::AiJob {
-                                task_id: Uuid::nil(),
-                                title: String::new(),
-                                suggested_bucket: Bucket::Team,
-                                context,
-                                lock_bucket: false,
-                                lock_priority: false,
-                                lock_due_date: false,
-                                edit_instruction: None,
-                                task_snapshot: None,
-                                triage_input: Some(instruction),
-                                triage_context: Some(triage_ctx),
-                                chat_history: app.chat_history.clone(),
-                            });
-                            app.status =
-                                Some(("AI decomposing…".to_string(), Instant::now(), true));
-                        } else {
-                            app.status =
-                                Some(("AI not configured".to_string(), Instant::now(), false));
-                        }
-                    } else if let Some(task_id) = app.selected_task_id {
-                        if let Some(task) = app.tasks.iter().find(|t| t.id == task_id) {
-                            let snapshot = format_task_snapshot(task);
-                            let context = build_ai_context(&app.tasks);
+                    if !instruction.is_empty() {
+                        // Detect decompose-intent instructions and route through triage.
+                        let lower = instruction.to_ascii_lowercase();
+                        let is_decompose = lower.contains("break down")
+                            || lower.contains("decompose")
+                            || lower.contains("sub-issue")
+                            || lower.contains("subissue")
+                            || lower.contains("sub-task")
+                            || lower.contains("subtask")
+                            || lower.contains("split into")
+                            || lower.contains("break into");
+
+                        if is_decompose {
                             if let Some(ai) = &app.ai {
+                                let context = build_ai_context(&app.tasks);
+                                let triage_ctx = build_triage_context(&app.tasks);
+                                let triage_input = annotate_mention(
+                                    &app.tasks,
+                                    target_task_id,
+                                    &instruction,
+                                );
+                                app.last_triage_input = triage_input.clone();
                                 ai.enqueue(llm::AiJob {
-                                    task_id,
-                                    title: task.title.clone(),
-                                    suggested_bucket: task.bucket,
+                                    task_id: Uuid::nil(),
+                                    title: String::new(),
+                                    suggested_bucket: Bucket::Team,
                                     context,
                                     lock_bucket: false,
                                     lock_priority: false,
                                     lock_due_date: false,
-                                    edit_instruction: Some(instruction),
-                                    task_snapshot: Some(snapshot),
-                                    triage_input: None,
-                                    triage_context: None,
-                    chat_history: Vec::new(),
+                                    edit_instruction: None,
+                                    task_snapshot: None,
+                                    triage_input: Some(triage_input),
+                                    triage_context: Some(triage_ctx),
+                                    chat_history: app.chat_history.clone(),
                                 });
-                                app.status = Some((
-                                    format!("AI editing: {}…", task.title),
-                                    Instant::now(),
-                                    true,
-                                ));
+                                app.status =
+                                    Some(("AI decomposing…".to_string(), Instant::now(), true));
                             } else {
                                 app.status =
                                     Some(("AI not configured".to_string(), Instant::now(), false));
                             }
+                        } else if let Some(task_id) = target_task_id {
+                            if let Some(task) = app.tasks.iter().find(|t| t.id == task_id) {
+                                let snapshot = format_task_snapshot(task);
+                                let context = build_ai_context(&app.tasks);
+                                if let Some(ai) = &app.ai {
+                                    ai.enqueue(llm::AiJob {
+                                        task_id,
+                                        title: task.title.clone(),
+                                        suggested_bucket: task.bucket,
+                                        context,
+                                        lock_bucket: false,
+                                        lock_priority: false,
+                                        lock_due_date: false,
+                                        edit_instruction: Some(instruction),
+                                        task_snapshot: Some(snapshot),
+                                        triage_input: None,
+                                        triage_context: None,
+                                        chat_history: Vec::new(),
+                                    });
+                                    app.status = Some((
+                                        format!("AI editing: {}…", task.title),
+                                        Instant::now(),
+                                        true,
+                                    ));
+                                } else {
+                                    app.status = Some((
+                                        "AI not configured".to_string(),
+                                        Instant::now(),
+                                        false,
+                                    ));
+                                }
+                            }
+                        } else {
+                            app.status =
+                                Some(("No task selected".to_string(), Instant::now(), false));
                         }
-                    } else {
-                        app.status = Some(("No task selected".to_string(), Instant::now(), false));
                     }
                 }
                 app.input.clear();
@@ -2353,6 +2375,48 @@ fn format_task_snapshot(task: &Task) -> String {
     )
 }
 
+/// Parse `@<id_prefix> <instruction>` – if the first token is a 4-8 hex prefix matching a task,
+/// return that task's id + the remaining text; otherwise fall back to `fallback_id` + full text.
+fn resolve_at_mention(
+    tasks: &[Task],
+    text: &str,
+    fallback_id: Option<Uuid>,
+) -> (Option<Uuid>, String) {
+    let trimmed = text.trim();
+    let first_space = trimmed.find(' ');
+    if let Some(pos) = first_space {
+        let token = &trimmed[..pos];
+        let rest = trimmed[pos..].trim().to_string();
+        let lower = token.to_ascii_lowercase();
+        if (4..=8).contains(&lower.len()) && lower.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Some(task) = tasks.iter().find(|t| {
+                let short = t.id.to_string().chars().take(lower.len()).collect::<String>();
+                short.to_ascii_lowercase() == lower
+            }) {
+                return (Some(task.id), rest);
+            }
+        }
+    }
+    (fallback_id, trimmed.to_string())
+}
+
+/// Annotate an instruction with the target task context so triage AI knows which task to act on.
+fn annotate_mention(tasks: &[Task], target_id: Option<Uuid>, instruction: &str) -> String {
+    if let Some(tid) = target_id {
+        if let Some(task) = tasks.iter().find(|t| t.id == tid) {
+            let short = task.id.to_string().chars().take(8).collect::<String>();
+            return format!(
+                "[target task: {} \"{}\" in {}] {}",
+                short,
+                task.title,
+                task.bucket.title(),
+                instruction
+            );
+        }
+    }
+    instruction.to_string()
+}
+
 fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String]) -> Vec<Uuid> {
     let mut out = Vec::new();
     for prefix in prefixes.iter() {
@@ -2696,7 +2760,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
             SetForegroundColor(Color::DarkGrey),
             Print(pad_to_width(
                 &clamp_text(
-                    "type a task + enter (e.g. \"prepare onboarding\")",
+                    "type a task • @<id> edit • /clear resets AI context",
                     max_input
                 ),
                 max_input,
@@ -2722,7 +2786,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         MoveTo(x_input, y_help),
         SetForegroundColor(Color::DarkGrey),
         Print(clamp_text(
-            "tab/i input • esc board • ↑/↓/←/→ navigate • p advance • 1/2/3 tabs • exit quits",
+            "tab/i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear • 1/2/3 tabs",
             content_width,
         )),
         ResetColor
@@ -2865,15 +2929,35 @@ fn render_bucket_column(
                 continue;
             }
 
+            // Dimmed ID prefix on title line for non-selected cards.
+            if line_idx == 0 && !is_selected {
+                let short_id = task.id.to_string().chars().take(8).collect::<String>();
+                let id_str = format!(" {} ", short_id);
+                let title_max = width.saturating_sub(id_str.width());
+                let title_str = clamp_text(&task.title, title_max);
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(&id_str),
+                    ResetColor,
+                    SetAttribute(Attribute::Bold),
+                    Print(&title_str),
+                )?;
+                let used = id_str.width() + title_str.width();
+                let pad = width.saturating_sub(used);
+                if pad > 0 {
+                    queue!(stdout, Print(" ".repeat(pad)))?;
+                }
+                queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                continue;
+            }
+
             let content = match line_idx {
                 0 => {
-                    // Title: bright default foreground + bold.
-                    if !is_selected {
-                        queue!(stdout, ResetColor, SetAttribute(Attribute::Bold))?;
-                    } else {
-                        queue!(stdout, SetAttribute(Attribute::Bold))?;
-                    }
-                    format!(" {}", task.title)
+                    // Title: selected card (bright + bold, includes id).
+                    let short_id = task.id.to_string().chars().take(8).collect::<String>();
+                    queue!(stdout, SetAttribute(Attribute::Bold))?;
+                    format!(" {} {}", short_id, task.title)
                 }
                 1 => {
                     // Desc line 1.
@@ -4763,6 +4847,8 @@ fn print_help() {
     println!("  admin: <text>            (force Admin bucket)");
     println!("  due:YYYY-MM-DD           (set due date, e.g. due:2026-02-20)");
     println!("  p:low|medium|high|critical (set priority, e.g. p:high)");
+    println!("  @<id> <instruction>      (AI-edit a specific task by ID prefix)");
+    println!("  /clear                   (clear AI conversation context)");
     println!();
     println!("AI:");
     println!("  Supports OpenAI and Anthropic models. Set the appropriate API key to enable.");
