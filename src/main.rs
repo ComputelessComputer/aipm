@@ -1751,6 +1751,22 @@ fn ensure_kanban_selection(app: &mut App) {
     app.kanban_selected = Some(ids[0]);
 }
 
+fn scroll_kanban_to_selected(app: &mut App) {
+    let stage_idx = app.kanban_stage.stage_index();
+    let ids = kanban_task_ids(&app.tasks, app.kanban_stage);
+    let sel_pos = app
+        .kanban_selected
+        .and_then(|id| ids.iter().position(|i| *i == id))
+        .unwrap_or(0);
+    let scroll = &mut app.kanban_scroll[stage_idx];
+    // Keep at least 1 row of context when possible.
+    // We don't know list_slots here, so just ensure selected is >= scroll.
+    if sel_pos < *scroll {
+        *scroll = sel_pos;
+    }
+    // Upper bound clamping happens at render time when list_slots is known.
+}
+
 fn move_kanban_selection(app: &mut App, delta: i32) {
     let ids = kanban_task_ids(&app.tasks, app.kanban_stage);
     if ids.is_empty() {
@@ -1769,6 +1785,7 @@ fn move_kanban_selection(app: &mut App, delta: i32) {
         next = 0;
     }
     app.kanban_selected = Some(ids[next as usize]);
+    scroll_kanban_to_selected(app);
 }
 
 fn persist(app: &mut App) {
@@ -3688,12 +3705,12 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
     Ok(())
 }
 
-fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
     let (x_margin, gap) = choose_layout(width, 4);
     let x = x_margin as u16;
-
     let y_help = rows.saturating_sub(1);
+    let today = Utc::now().date_naive();
 
     queue!(
         stdout,
@@ -3712,17 +3729,29 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
         x_margin + 3 * (col_width + gap),
     ];
 
+    const CARD_LINES: u16 = 2; // title line + metadata line
+    let list_top = 8u16; // leave room for header + separator
+    let list_bottom = y_help.saturating_sub(1);
+    let list_height = list_bottom.saturating_sub(list_top) as usize;
+    let max_visible = list_height / CARD_LINES as usize;
+
     for (i, stage) in Progress::ALL.iter().enumerate() {
-        let x = col_x[i] as u16;
+        let cx = col_x[i] as u16;
         let is_active_col = *stage == app.kanban_stage;
-        queue!(stdout, MoveTo(x, 5))?;
+        let ids = kanban_task_ids(&app.tasks, *stage);
+        let count = ids.len();
+        let stage_idx = stage.stage_index();
+
+        // ── Column header: "Todo (25)" ──
+        let header = format!("{} ({})", stage.title(), count);
+        queue!(stdout, MoveTo(cx, 5))?;
         if is_active_col {
             queue!(
                 stdout,
                 SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
                 SetAttribute(Attribute::Underlined),
-                Print(clamp_text(stage.title(), col_width)),
+                Print(clamp_text(&header, col_width)),
                 SetAttribute(Attribute::Reset),
                 ResetColor
             )?;
@@ -3731,40 +3760,190 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
                 stdout,
                 SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
-                Print(clamp_text(stage.title(), col_width)),
+                Print(clamp_text(&header, col_width)),
                 SetAttribute(Attribute::Reset),
                 ResetColor
             )?;
         }
 
-        let ids = kanban_task_ids(&app.tasks, *stage);
+        // Thin separator under header.
+        let sep: String = "─".repeat(col_width);
+        queue!(
+            stdout,
+            MoveTo(cx, 6),
+            SetForegroundColor(if is_active_col {
+                progress_color(*stage)
+            } else {
+                Color::DarkGrey
+            }),
+            Print(clamp_text(&sep, col_width)),
+            ResetColor
+        )?;
 
-        let list_top = 7u16;
-        let list_height = rows.saturating_sub(list_top + 2) as usize;
+        // ── Scrolling ──
+        let scroll = &mut app.kanban_scroll[stage_idx];
+        if is_active_col {
+            let sel_pos = app
+                .kanban_selected
+                .and_then(|id| ids.iter().position(|x| *x == id))
+                .unwrap_or(0);
+            if max_visible > 0 {
+                if sel_pos >= *scroll + max_visible {
+                    *scroll = sel_pos.saturating_sub(max_visible.saturating_sub(1));
+                }
+                if sel_pos < *scroll {
+                    *scroll = sel_pos;
+                }
+            }
+        }
+        let scroll_val = *scroll;
 
-        for (row, id) in ids.iter().take(list_height).enumerate() {
+        let visible_count = max_visible.min(count.saturating_sub(scroll_val));
+        let has_above = scroll_val > 0;
+        let has_below = scroll_val + visible_count < count;
+
+        // ── Overflow: above ──
+        let mut y_cur = list_top;
+        if has_above {
+            let above_text = format!("▲ {} above", scroll_val);
+            queue!(
+                stdout,
+                MoveTo(cx, y_cur),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text(&above_text, col_width)),
+                ResetColor
+            )?;
+            y_cur += 1;
+        }
+
+        // ── Task cards ──
+        for id in ids.iter().skip(scroll_val).take(visible_count) {
+            if y_cur + CARD_LINES > list_bottom {
+                break;
+            }
             let task = app.tasks.iter().find(|t| t.id == *id).unwrap();
             let is_selected = is_active_col && app.kanban_selected == Some(*id);
-            let line = if task.is_child() {
-                format!(" ↳ {}", task.title)
-            } else {
-                format!(" {} · {}", task.bucket, task.title)
+
+            // Priority bullet.
+            let bullet = match task.priority {
+                Priority::Critical => "◉",
+                Priority::High => "●",
+                Priority::Medium => "○",
+                Priority::Low => "·",
             };
-            queue!(stdout, MoveTo(x, list_top + row as u16))?;
+
+            // Due date string.
+            let due_str: Option<String> = task.due_date.map(|d| {
+                if d < today {
+                    format!("⚠ {}", d.format("%b %d"))
+                } else if d == today {
+                    "due today".to_string()
+                } else {
+                    d.format("%b %d").to_string()
+                }
+            });
+
+            let meta_line = if let Some(due) = &due_str {
+                format!("   {} · {}", task.bucket, due)
+            } else {
+                format!("   {}", task.bucket)
+            };
+
+            // ── Line 1: priority bullet + title ──
+            queue!(stdout, MoveTo(cx, y_cur))?;
+            if is_selected {
+                let full = if task.is_child() {
+                    format!(" {} ↳ {}", bullet, task.title)
+                } else {
+                    format!(" {} {}", bullet, task.title)
+                };
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White),
+                    Print(pad_to_width(&clamp_text(&full, col_width), col_width)),
+                    ResetColor
+                )?;
+            } else {
+                let prefix = format!(" {} ", bullet);
+                queue!(
+                    stdout,
+                    SetForegroundColor(priority_color(task.priority)),
+                    Print(&prefix),
+                    ResetColor
+                )?;
+                let title_max = col_width.saturating_sub(prefix.width());
+                let title_text = if task.is_child() {
+                    format!("↳ {}", task.title)
+                } else {
+                    task.title.clone()
+                };
+                queue!(stdout, Print(clamp_text(&title_text, title_max)))?;
+            }
+
+            // ── Line 2: bucket + due date ──
+            queue!(stdout, MoveTo(cx, y_cur + 1))?;
             if is_selected {
                 queue!(
                     stdout,
                     SetForegroundColor(Color::Black),
                     SetBackgroundColor(Color::White),
-                    Print(pad_to_width(&clamp_text(&line, col_width), col_width)),
+                    Print(pad_to_width(&clamp_text(&meta_line, col_width), col_width)),
                     ResetColor
                 )?;
             } else {
-                queue!(stdout, Print(clamp_text(&line, col_width)))?;
+                let is_overdue = task.due_date.is_some_and(|d| d < today);
+                let is_due_today = task.due_date == Some(today);
+                let meta_color = if is_overdue {
+                    Color::Red
+                } else if is_due_today {
+                    Color::Yellow
+                } else {
+                    Color::DarkGrey
+                };
+                queue!(
+                    stdout,
+                    SetForegroundColor(meta_color),
+                    Print(clamp_text(&meta_line, col_width)),
+                    ResetColor
+                )?;
             }
+
+            y_cur += CARD_LINES;
+        }
+
+        // ── Overflow: below ──
+        if has_below {
+            let below_count = count.saturating_sub(scroll_val + visible_count);
+            let below_text = format!("▼ {} more", below_count);
+            let y_below = y_cur.min(list_bottom.saturating_sub(1));
+            queue!(
+                stdout,
+                MoveTo(cx, y_below),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text(&below_text, col_width)),
+                ResetColor
+            )?;
         }
     }
 
+    // ── Legend ──
+    let legend_y = y_help.saturating_sub(1);
+    queue!(
+        stdout,
+        MoveTo(x, legend_y),
+        SetForegroundColor(Color::DarkGrey),
+        Print("◉ critical  "),
+        SetForegroundColor(Color::Yellow),
+        Print("● high  "),
+        ResetColor,
+        Print("○ medium  "),
+        SetForegroundColor(Color::DarkGrey),
+        Print("· low"),
+        ResetColor
+    )?;
+
+    // ── Help bar ──
     queue!(
         stdout,
         MoveTo(x, y_help),
