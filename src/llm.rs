@@ -595,9 +595,8 @@ fn call_llm_with_tools(
                 .and_then(|c| c.message.tool_calls.as_ref())
                 .and_then(|tc| tc.first())
                 .ok_or_else(|| "AI returned no tool call".to_string())?;
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.function.arguments)
-                    .map_err(|err| format!("AI tool args parse failed: {err}"))?;
+            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                .map_err(|err| format!("AI tool args parse failed: {err}"))?;
             Ok((tool_call.function.name.clone(), args))
         }
         Provider::Anthropic => {
@@ -646,7 +645,12 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
         job.lock_bucket, job.lock_priority, job.lock_due_date
     );
 
-    let bucket_enum = job.bucket_names.iter().map(|n| format!("\"{}\"" , n)).collect::<Vec<_>>().join("|");
+    let bucket_enum = job
+        .bucket_names
+        .iter()
+        .map(|n| format!("\"{}\"", n))
+        .collect::<Vec<_>>()
+        .join("|");
 
     let user = format!(
         "New task title: {}\nSuggested bucket: {}\n{}\n\nExisting tasks you may depend on (id_prefix [bucket] title):\n{}\nReturn JSON with keys:\n{{\n  \"bucket\": {bucket_enum},\n  \"description\": string,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...]\n}}\nRules:\n- If a field is locked, keep it aligned with the suggested value (bucket) or output null/Medium (due/priority) as appropriate.\n- If unsure, keep bucket as suggested.\n- Dependencies must use the provided id_prefix values.\n",
@@ -696,7 +700,11 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
     let mut update = TaskUpdate::default();
 
     if !job.lock_bucket {
-        if let Some(bucket) = enriched.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)) {
+        if let Some(bucket) = enriched
+            .bucket
+            .as_deref()
+            .and_then(|b| parse_bucket(b, &job.bucket_names))
+        {
             update.bucket = Some(bucket);
         }
     }
@@ -852,7 +860,12 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         ));
     }
 
-    let bucket_enum = job.bucket_names.iter().map(|n| format!("\"{}\"" , n)).collect::<Vec<_>>().join("|");
+    let bucket_enum = job
+        .bucket_names
+        .iter()
+        .map(|n| format!("\"{}\"", n))
+        .collect::<Vec<_>>()
+        .join("|");
 
     let user = format!(
         "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- Only include fields that should change. Set unchanged fields to null.\n",
@@ -910,7 +923,11 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         .filter(|s| !s.is_empty())
         .map(|s| truncate(s, 200).to_string());
 
-    if let Some(bucket) = enriched.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)) {
+    if let Some(bucket) = enriched
+        .bucket
+        .as_deref()
+        .and_then(|b| parse_bucket(b, &job.bucket_names))
+    {
         update.bucket = Some(bucket);
     }
 
@@ -978,7 +995,10 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
                     .as_deref()
                     .map(|s| truncate(s.trim(), 400).to_string())
                     .unwrap_or_default(),
-                bucket: st.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)),
+                bucket: st
+                    .bucket
+                    .as_deref()
+                    .and_then(|b| parse_bucket(b, &job.bucket_names)),
                 priority: st
                     .priority
                     .as_deref()
@@ -1245,7 +1265,10 @@ fn parse_subtask_args(args: Option<Vec<SubTaskArg>>, bucket_names: &[String]) ->
                     .as_deref()
                     .map(|s| truncate(s.trim(), 400).to_string())
                     .unwrap_or_default(),
-                bucket: st.bucket.as_deref().and_then(|b| parse_bucket(b, bucket_names)),
+                bucket: st
+                    .bucket
+                    .as_deref()
+                    .and_then(|b| parse_bucket(b, bucket_names)),
                 priority: st
                     .priority
                     .as_deref()
@@ -1402,7 +1425,10 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                         .map(|s| truncate(s, 200).to_string()),
-                    bucket: parsed.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)),
+                    bucket: parsed
+                        .bucket
+                        .as_deref()
+                        .and_then(|b| parse_bucket(b, &job.bucket_names)),
                     description: parsed
                         .description
                         .as_deref()

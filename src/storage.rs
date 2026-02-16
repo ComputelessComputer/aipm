@@ -272,8 +272,8 @@ impl Storage {
     pub fn save_settings(&self, settings: &AiSettings) -> io::Result<()> {
         let path = self.dir.join("settings.yaml");
         fs::create_dir_all(&self.dir)?;
-        let yaml = serde_yaml::to_string(settings)
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        let yaml =
+            serde_yaml::to_string(settings).map_err(|err| io::Error::other(err.to_string()))?;
         let tmp_path = path.with_extension("yaml.tmp");
         fs::write(&tmp_path, yaml)?;
         fs::rename(&tmp_path, &path)?;
@@ -294,12 +294,7 @@ impl Storage {
         if tasks_dir.is_dir() {
             let has_md = fs::read_dir(&tasks_dir)?
                 .flatten()
-                .any(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        == Some("md")
-                });
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"));
             if has_md {
                 return Ok(());
             }
@@ -440,11 +435,10 @@ fn parse_task_file(content: &str) -> Result<Task, String> {
         .unwrap_or("")
         .trim_start_matches(['\r', '\n']);
 
-    let fm: TaskFrontMatter = serde_yaml::from_str(yaml_str)
-        .map_err(|err| format!("YAML parse error: {err}"))?;
+    let fm: TaskFrontMatter =
+        serde_yaml::from_str(yaml_str).map_err(|err| format!("YAML parse error: {err}"))?;
 
-    let id = Uuid::parse_str(&fm.id)
-        .map_err(|err| format!("invalid id: {err}"))?;
+    let id = Uuid::parse_str(&fm.id).map_err(|err| format!("invalid id: {err}"))?;
 
     let bucket = fm.bucket.clone();
 
@@ -476,7 +470,7 @@ fn parse_task_file(content: &str) -> Result<Task, String> {
         .parent_id
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|s| Uuid::parse_str(s))
+        .map(Uuid::parse_str)
         .transpose()
         .map_err(|err| format!("invalid parent_id: {err}"))?;
 

@@ -407,7 +407,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_tabs_key(app, key);
     }
 
-
     // Tab switching with 1/2/3/4 (not while typing in input).
     if app.focus != Focus::Input {
         match key.code {
@@ -654,7 +653,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
-        if app.input.trim().eq_ignore_ascii_case("/exit") {
+            if app.input.trim().eq_ignore_ascii_case("/exit") {
                 return Ok(true);
             }
 
@@ -681,7 +680,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         }
                     })
                     .collect();
-                app.status = Some((format!("Buckets: {}", names.join(", ")), Instant::now(), false));
+                app.status = Some((
+                    format!("Buckets: {}", names.join(", ")),
+                    Instant::now(),
+                    false,
+                ));
                 app.input.clear();
                 app.input_cursor = 0;
                 return Ok(false);
@@ -691,9 +694,22 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(rest) = app.input.trim().strip_prefix("/bucket add ") {
                 let name = rest.trim().to_string();
                 if name.is_empty() {
-                    app.status = Some(("Usage: /bucket add <name>".to_string(), Instant::now(), false));
-                } else if app.settings.buckets.iter().any(|b| b.name.eq_ignore_ascii_case(&name)) {
-                    app.status = Some((format!("Bucket \"{}\" already exists", name), Instant::now(), false));
+                    app.status = Some((
+                        "Usage: /bucket add <name>".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
+                } else if app
+                    .settings
+                    .buckets
+                    .iter()
+                    .any(|b| b.name.eq_ignore_ascii_case(&name))
+                {
+                    app.status = Some((
+                        format!("Bucket \"{}\" already exists", name),
+                        Instant::now(),
+                        false,
+                    ));
                 } else {
                     app.settings.buckets.push(crate::model::BucketDef {
                         name: name.clone(),
@@ -712,11 +728,20 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(rest) = app.input.trim().strip_prefix("/bucket rename ") {
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 if parts.len() < 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
-                    app.status = Some(("Usage: /bucket rename <old> <new>".to_string(), Instant::now(), false));
+                    app.status = Some((
+                        "Usage: /bucket rename <old> <new>".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
                 } else {
                     let old = parts[0].trim();
                     let new_name = parts[1].trim().to_string();
-                    if let Some(bucket) = app.settings.buckets.iter_mut().find(|b| b.name.eq_ignore_ascii_case(old)) {
+                    if let Some(bucket) = app
+                        .settings
+                        .buckets
+                        .iter_mut()
+                        .find(|b| b.name.eq_ignore_ascii_case(old))
+                    {
                         let old_name = bucket.name.clone();
                         bucket.name = new_name.clone();
                         // Update all tasks in that bucket.
@@ -727,9 +752,17 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         }
                         persist_settings(app);
                         persist(app);
-                        app.status = Some((format!("Renamed: {} → {}", old_name, new_name), Instant::now(), false));
+                        app.status = Some((
+                            format!("Renamed: {} → {}", old_name, new_name),
+                            Instant::now(),
+                            false,
+                        ));
                     } else {
-                        app.status = Some((format!("Bucket \"{}\" not found", old), Instant::now(), false));
+                        app.status = Some((
+                            format!("Bucket \"{}\" not found", old),
+                            Instant::now(),
+                            false,
+                        ));
                     }
                 }
                 app.input.clear();
@@ -741,11 +774,23 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(rest) = app.input.trim().strip_prefix("/bucket desc ") {
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 if parts.is_empty() || parts[0].trim().is_empty() {
-                    app.status = Some(("Usage: /bucket desc <name> <description>".to_string(), Instant::now(), false));
+                    app.status = Some((
+                        "Usage: /bucket desc <name> <description>".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
                 } else {
                     let name = parts[0].trim();
-                    let desc = parts.get(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                    if let Some(bucket) = app.settings.buckets.iter_mut().find(|b| b.name.eq_ignore_ascii_case(name)) {
+                    let desc = parts
+                        .get(1)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    if let Some(bucket) = app
+                        .settings
+                        .buckets
+                        .iter_mut()
+                        .find(|b| b.name.eq_ignore_ascii_case(name))
+                    {
                         let bname = bucket.name.clone();
                         bucket.description = desc.clone();
                         let msg = if desc.is_some() {
@@ -756,7 +801,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         persist_settings(app);
                         app.status = Some((msg, Instant::now(), false));
                     } else {
-                        app.status = Some((format!("Bucket \"{}\" not found", name), Instant::now(), false));
+                        app.status = Some((
+                            format!("Bucket \"{}\" not found", name),
+                            Instant::now(),
+                            false,
+                        ));
                     }
                 }
                 app.input.clear();
@@ -768,10 +817,23 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(rest) = app.input.trim().strip_prefix("/bucket delete ") {
                 let name = rest.trim();
                 if name.is_empty() {
-                    app.status = Some(("Usage: /bucket delete <name>".to_string(), Instant::now(), false));
+                    app.status = Some((
+                        "Usage: /bucket delete <name>".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
                 } else if app.settings.buckets.len() <= 1 {
-                    app.status = Some(("Cannot delete the last bucket".to_string(), Instant::now(), false));
-                } else if let Some(pos) = app.settings.buckets.iter().position(|b| b.name.eq_ignore_ascii_case(name)) {
+                    app.status = Some((
+                        "Cannot delete the last bucket".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
+                } else if let Some(pos) = app
+                    .settings
+                    .buckets
+                    .iter()
+                    .position(|b| b.name.eq_ignore_ascii_case(name))
+                {
                     let removed_name = app.settings.buckets[pos].name.clone();
                     app.settings.buckets.remove(pos);
                     if pos < app.bucket_scrolls.len() {
@@ -795,14 +857,24 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         persist(app);
                     }
                     let msg = if moved > 0 {
-                        format!("Deleted bucket \"{}\" ({} task{} → {})", removed_name, moved, if moved == 1 { "" } else { "s" }, fallback)
+                        format!(
+                            "Deleted bucket \"{}\" ({} task{} → {})",
+                            removed_name,
+                            moved,
+                            if moved == 1 { "" } else { "s" },
+                            fallback
+                        )
                     } else {
                         format!("Deleted bucket \"{}\" (no tasks affected)", removed_name)
                     };
                     app.status = Some((msg, Instant::now(), false));
                     ensure_default_selection(app);
                 } else {
-                    app.status = Some((format!("Bucket \"{}\" not found", name), Instant::now(), false));
+                    app.status = Some((
+                        format!("Bucket \"{}\" not found", name),
+                        Instant::now(),
+                        false,
+                    ));
                 }
                 app.input.clear();
                 app.input_cursor = 0;
@@ -845,11 +917,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                             if let Some(ai) = &app.ai {
                                 let context = build_ai_context(&app.tasks);
                                 let triage_ctx = build_triage_context(&app.tasks);
-                                let triage_input = annotate_mention(
-                                    &app.tasks,
-                                    target_task_id,
-                                    &instruction,
-                                );
+                                let triage_input =
+                                    annotate_mention(&app.tasks, target_task_id, &instruction);
                                 app.last_triage_input = triage_input.clone();
                                 ai.enqueue(llm::AiJob {
                                     task_id: Uuid::nil(),
@@ -974,7 +1043,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 // Option+Backspace: delete word before cursor.
                 while app.input_cursor > 0 {
                     let bp = char_byte_pos(&app.input, app.input_cursor - 1);
-                    if app.input[bp..].chars().next().unwrap() != ' ' {
+                    if !app.input[bp..].starts_with(' ') {
                         break;
                     }
                     app.input.remove(bp);
@@ -982,7 +1051,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 }
                 while app.input_cursor > 0 {
                     let bp = char_byte_pos(&app.input, app.input_cursor - 1);
-                    if app.input[bp..].chars().next().unwrap() == ' ' {
+                    if app.input[bp..].starts_with(' ') {
                         break;
                     }
                     app.input.remove(bp);
@@ -1015,7 +1084,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             // Ctrl+W: delete word before cursor.
             while app.input_cursor > 0 {
                 let bp = char_byte_pos(&app.input, app.input_cursor - 1);
-                if app.input[bp..].chars().next().unwrap() != ' ' {
+                if !app.input[bp..].starts_with(' ') {
                     break;
                 }
                 app.input.remove(bp);
@@ -1023,7 +1092,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             while app.input_cursor > 0 {
                 let bp = char_byte_pos(&app.input, app.input_cursor - 1);
-                if app.input[bp..].chars().next().unwrap() == ' ' {
+                if app.input[bp..].starts_with(' ') {
                     break;
                 }
                 app.input.remove(bp);
@@ -1116,7 +1185,12 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
         KeyCode::Down | KeyCode::Char('j') => {
-            let bname = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+            let bname = app
+                .settings
+                .buckets
+                .get(app.selected_bucket)
+                .map(|b| b.name.as_str())
+                .unwrap_or("");
             let bucket_tasks = bucket_task_indices(&app.tasks, bname, &app.settings);
             let at_last = app
                 .selected_task_id
@@ -1282,9 +1356,11 @@ fn commit_edit_buf(app: &mut App) {
         }
         EditField::Bucket => {
             let input = app.edit_buf.trim();
-            let matched = app.settings.buckets.iter().find(|b| {
-                b.name.eq_ignore_ascii_case(input)
-            });
+            let matched = app
+                .settings
+                .buckets
+                .iter()
+                .find(|b| b.name.eq_ignore_ascii_case(input));
             if let Some(b) = matched {
                 task.bucket = b.name.clone();
                 task.updated_at = now;
@@ -1403,7 +1479,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     app.edit_buf.clear();
                 } else if key.modifiers.contains(KeyModifiers::ALT) {
                     // Option+Backspace: delete word before cursor.
-                    while app.edit_buf.chars().last() == Some(' ') {
+                    while app.edit_buf.ends_with(' ') {
                         app.edit_buf.pop();
                     }
                     while let Some(ch) = app.edit_buf.chars().last() {
@@ -1798,35 +1874,33 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 persist_settings(app);
             }
         },
-        KeyCode::Left | KeyCode::Right => {
-            match app.settings_field {
-                SettingsField::AiEnabled => {
-                    app.settings.enabled = !app.settings.enabled;
-                    persist_settings(app);
-                    rebuild_ai(app);
-                }
-                SettingsField::Model => {
-                    cycle_model(app, key.code == KeyCode::Right);
-                }
-                SettingsField::ShowBacklog => {
-                    app.settings.show_backlog = !app.settings.show_backlog;
-                    persist_settings(app);
-                }
-                SettingsField::ShowTodo => {
-                    app.settings.show_todo = !app.settings.show_todo;
-                    persist_settings(app);
-                }
-                SettingsField::ShowInProgress => {
-                    app.settings.show_in_progress = !app.settings.show_in_progress;
-                    persist_settings(app);
-                }
-                SettingsField::ShowDone => {
-                    app.settings.show_done = !app.settings.show_done;
-                    persist_settings(app);
-                }
-                _ => {}
+        KeyCode::Left | KeyCode::Right => match app.settings_field {
+            SettingsField::AiEnabled => {
+                app.settings.enabled = !app.settings.enabled;
+                persist_settings(app);
+                rebuild_ai(app);
             }
-        }
+            SettingsField::Model => {
+                cycle_model(app, key.code == KeyCode::Right);
+            }
+            SettingsField::ShowBacklog => {
+                app.settings.show_backlog = !app.settings.show_backlog;
+                persist_settings(app);
+            }
+            SettingsField::ShowTodo => {
+                app.settings.show_todo = !app.settings.show_todo;
+                persist_settings(app);
+            }
+            SettingsField::ShowInProgress => {
+                app.settings.show_in_progress = !app.settings.show_in_progress;
+                persist_settings(app);
+            }
+            SettingsField::ShowDone => {
+                app.settings.show_done = !app.settings.show_done;
+                persist_settings(app);
+            }
+            _ => {}
+        },
         _ => {}
     }
     Ok(false)
@@ -1884,7 +1958,7 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.settings_buf.clear();
             } else if key.modifiers.contains(KeyModifiers::ALT) {
                 // Option+Backspace: delete word before cursor.
-                while app.settings_buf.chars().last() == Some(' ') {
+                while app.settings_buf.ends_with(' ') {
                     app.settings_buf.pop();
                 }
                 while let Some(ch) = app.settings_buf.chars().last() {
@@ -1933,7 +2007,11 @@ fn poll_ai(app: &mut App) -> bool {
                         .as_deref()
                         .unwrap_or("Untitled")
                         .to_string();
-                    let bucket = result.update.bucket.clone().unwrap_or_else(|| default_bucket_name(&app.settings));
+                    let bucket = result
+                        .update
+                        .bucket
+                        .clone()
+                        .unwrap_or_else(|| default_bucket_name(&app.settings));
                     let mut task = Task::new(bucket.clone(), title, now);
                     if let Some(desc) = &result.update.description {
                         task.description = desc.clone();
@@ -2043,7 +2121,8 @@ fn poll_ai(app: &mut App) -> bool {
                             let count = result.sub_task_specs.len();
                             let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                             for spec in result.sub_task_specs.iter() {
-                                let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
+                                let bucket =
+                                    spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                                 let mut task = Task::new(bucket, spec.title.clone(), now);
                                 task.parent_id = Some(id);
                                 task.description = spec.description.clone();
@@ -2146,10 +2225,15 @@ fn poll_ai(app: &mut App) -> bool {
                         .or(app.selected_task_id);
                     // First pass: create all tasks and collect their Uuids.
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
-                    let default_bucket =
-                        specs.first().and_then(|s| s.bucket.clone()).unwrap_or_else(|| default_bucket_name(&app.settings));
+                    let default_bucket = specs
+                        .first()
+                        .and_then(|s| s.bucket.clone())
+                        .unwrap_or_else(|| default_bucket_name(&app.settings));
                     for spec in specs.iter() {
-                        let bucket = spec.bucket.clone().unwrap_or_else(|| default_bucket.clone());
+                        let bucket = spec
+                            .bucket
+                            .clone()
+                            .unwrap_or_else(|| default_bucket.clone());
                         let mut task = Task::new(bucket, spec.title.clone(), now);
                         task.parent_id = parent_id;
                         task.description = spec.description.clone();
@@ -2514,7 +2598,11 @@ fn resolve_at_mention(
         let lower = token.to_ascii_lowercase();
         if (4..=8).contains(&lower.len()) && lower.chars().all(|c| c.is_ascii_hexdigit()) {
             if let Some(task) = tasks.iter().find(|t| {
-                let short = t.id.to_string().chars().take(lower.len()).collect::<String>();
+                let short =
+                    t.id.to_string()
+                        .chars()
+                        .take(lower.len())
+                        .collect::<String>();
                 short.to_ascii_lowercase() == lower
             }) {
                 return (Some(task.id), rest);
@@ -2531,10 +2619,7 @@ fn annotate_mention(tasks: &[Task], target_id: Option<Uuid>, instruction: &str) 
             let short = task.id.to_string().chars().take(8).collect::<String>();
             return format!(
                 "[target task: {} \"{}\" in {}] {}",
-                short,
-                task.title,
-                task.bucket,
-                instruction
+                short, task.title, task.bucket, instruction
             );
         }
     }
@@ -2571,7 +2656,12 @@ fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String
 }
 
 fn ensure_default_selection(app: &mut App) {
-    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+    let bucket_name = app
+        .settings
+        .buckets
+        .get(app.selected_bucket)
+        .map(|b| b.name.as_str())
+        .unwrap_or("");
     let bucket_tasks = bucket_task_indices(&app.tasks, bucket_name, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
@@ -2593,7 +2683,12 @@ fn ensure_default_selection(app: &mut App) {
 }
 
 fn move_selection(app: &mut App, delta: i32) {
-    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+    let bucket_name = app
+        .settings
+        .buckets
+        .get(app.selected_bucket)
+        .map(|b| b.name.as_str())
+        .unwrap_or("");
     let bucket_tasks = bucket_task_indices(&app.tasks, bucket_name, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
@@ -2633,7 +2728,12 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
     let visible = visible_cards(cards_area_height);
     let visible = visible.max(1);
 
-    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+    let bucket_name = app
+        .settings
+        .buckets
+        .get(app.selected_bucket)
+        .map(|b| b.name.as_str())
+        .unwrap_or("");
     let selected_index = app
         .selected_task_id
         .and_then(|id| {
@@ -2839,12 +2939,12 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 
     let y_cards_start = y_body_top + 3;
 
-    for i in 0..app.settings.buckets.len() {
+    for (i, &cx) in col_x.iter().enumerate().take(app.settings.buckets.len()) {
         render_bucket_column(
             stdout,
             app,
             i,
-            col_x[i] as u16,
+            cx as u16,
             y_cards_start,
             col_width,
             y_status,
@@ -3186,11 +3286,7 @@ fn render_bucket_column(
 
         // Spacer line.
         if y_cursor < max_y {
-            queue!(
-                stdout,
-                MoveTo(x, y_cursor),
-                Print(pad_to_width("", width))
-            )?;
+            queue!(stdout, MoveTo(x, y_cursor), Print(pad_to_width("", width)))?;
             y_cursor += 1;
         }
     }
@@ -3348,7 +3444,12 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         let prefix = if task.is_child() {
             "↳"
         } else {
-            let bi = app.settings.buckets.iter().position(|b| b.name == task.bucket).unwrap_or(0);
+            let bi = app
+                .settings
+                .buckets
+                .iter()
+                .position(|b| b.name == task.bucket)
+                .unwrap_or(0);
             BUCKET_SYMBOLS[bi % BUCKET_SYMBOLS.len()]
         };
         let label = format!("{} {}", prefix, task.title);
@@ -3646,11 +3747,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
             let line = if task.is_child() {
                 format!(" ↳ {}", task.title)
             } else {
-                format!(
-                    " {} · {}",
-                    task.bucket,
-                    task.title
-                )
+                format!(" {} · {}", task.bucket, task.title)
             };
             queue!(stdout, MoveTo(x, list_top + row as u16))?;
             if is_selected {
@@ -3732,18 +3829,30 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 }
             }
             SettingsField::Timeout => format!("{}s", app.settings.timeout_secs),
-            SettingsField::ShowBacklog => {
-                if app.settings.show_backlog { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            SettingsField::ShowBacklog => if app.settings.show_backlog {
+                "\u{2611} On"
+            } else {
+                "\u{2610} Off"
             }
-            SettingsField::ShowTodo => {
-                if app.settings.show_todo { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            .to_string(),
+            SettingsField::ShowTodo => if app.settings.show_todo {
+                "\u{2611} On"
+            } else {
+                "\u{2610} Off"
             }
-            SettingsField::ShowInProgress => {
-                if app.settings.show_in_progress { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            .to_string(),
+            SettingsField::ShowInProgress => if app.settings.show_in_progress {
+                "\u{2611} On"
+            } else {
+                "\u{2610} Off"
             }
-            SettingsField::ShowDone => {
-                if app.settings.show_done { "\u{2611} On" } else { "\u{2610} Off" }.to_string()
+            .to_string(),
+            SettingsField::ShowDone => if app.settings.show_done {
+                "\u{2611} On"
+            } else {
+                "\u{2610} Off"
             }
+            .to_string(),
         };
 
         let show_value = if is_current && app.settings_editing {
@@ -4451,7 +4560,7 @@ fn choose_layout(total_width: usize, columns: usize) -> (usize, usize) {
 
             loop {
                 let content = total_width.saturating_sub(x_margin * 2);
-                let gaps = if columns > 1 { columns - 1 } else { 0 };
+                let gaps = columns.saturating_sub(1);
                 let col_width = content.saturating_sub(gap * gaps) / columns.max(1);
                 if col_width >= min_col || (x_margin <= 2 && gap <= 2) {
                     return (x_margin, gap);
@@ -4543,7 +4652,11 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         .as_deref()
                         .unwrap_or("Untitled")
                         .to_string();
-                    let bucket = result.update.bucket.clone().unwrap_or_else(|| default_bucket_name(&settings));
+                    let bucket = result
+                        .update
+                        .bucket
+                        .clone()
+                        .unwrap_or_else(|| default_bucket_name(&settings));
                     let mut task = Task::new(bucket.clone(), title, now);
                     if let Some(desc) = &result.update.description {
                         task.description = desc.clone();
@@ -4565,11 +4678,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         );
                     }
                     let parent_id = task.id;
-                    println!(
-                        "  + Created \"{}\" [{}]",
-                        task.title,
-                        task.bucket
-                    );
+                    println!("  + Created \"{}\" [{}]", task.title, task.bucket);
                     tasks.push(task);
                     total_changes += 1;
                     if !result.sub_task_specs.is_empty() {
@@ -4643,7 +4752,8 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             let count = result.sub_task_specs.len();
                             let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                             for spec in result.sub_task_specs.iter() {
-                                let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
+                                let bucket =
+                                    spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                                 let mut task = Task::new(bucket, spec.title.clone(), now);
                                 task.parent_id = Some(id);
                                 task.description = spec.description.clone();
@@ -4716,12 +4826,17 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         .and_then(|id| tasks.iter().find(|t| t.id == id))
                         .map(|t| t.title.clone())
                         .unwrap_or_else(|| "(no parent)".to_string());
-                    let default_bucket =
-                        specs.first().and_then(|s| s.bucket.clone()).unwrap_or_else(|| default_bucket_name(&settings));
+                    let default_bucket = specs
+                        .first()
+                        .and_then(|s| s.bucket.clone())
+                        .unwrap_or_else(|| default_bucket_name(&settings));
                     let count = specs.len();
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                     for spec in specs.iter() {
-                        let bucket = spec.bucket.clone().unwrap_or_else(|| default_bucket.clone());
+                        let bucket = spec
+                            .bucket
+                            .clone()
+                            .unwrap_or_else(|| default_bucket.clone());
                         let mut task = Task::new(bucket, spec.title.clone(), now);
                         task.parent_id = parent_uuid;
                         task.description = spec.description.clone();
