@@ -225,6 +225,10 @@ struct App {
 
     chat_history: Vec<llm::ChatEntry>,
     last_triage_input: String,
+
+    input_history: Vec<String>,
+    input_history_index: Option<usize>,
+    input_saved: String,
 }
 
 struct TerminalGuard;
@@ -319,6 +323,9 @@ fn main() -> io::Result<()> {
         settings_editing: false,
         chat_history: Vec::new(),
         last_triage_input: String::new(),
+        input_history: Vec::new(),
+        input_history_index: None,
+        input_saved: String::new(),
     };
 
     ensure_default_selection(&mut app);
@@ -678,7 +685,55 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             Ok(false)
         }
+        KeyCode::Up => {
+            if app.input_history.is_empty() {
+                return Ok(false);
+            }
+            match app.input_history_index {
+                None => {
+                    app.input_saved = app.input.clone();
+                    let idx = app.input_history.len() - 1;
+                    app.input_history_index = Some(idx);
+                    app.input = app.input_history[idx].clone();
+                    app.input_cursor = app.input.chars().count();
+                }
+                Some(idx) if idx > 0 => {
+                    let new_idx = idx - 1;
+                    app.input_history_index = Some(new_idx);
+                    app.input = app.input_history[new_idx].clone();
+                    app.input_cursor = app.input.chars().count();
+                }
+                _ => {}
+            }
+            Ok(false)
+        }
+        KeyCode::Down => {
+            match app.input_history_index {
+                Some(idx) if idx < app.input_history.len() - 1 => {
+                    let new_idx = idx + 1;
+                    app.input_history_index = Some(new_idx);
+                    app.input = app.input_history[new_idx].clone();
+                    app.input_cursor = app.input.chars().count();
+                }
+                Some(_) => {
+                    app.input_history_index = None;
+                    app.input = app.input_saved.clone();
+                    app.input_saved.clear();
+                    app.input_cursor = app.input.chars().count();
+                }
+                None => {}
+            }
+            Ok(false)
+        }
         KeyCode::Enter => {
+            // Push non-empty input to history.
+            let trimmed_for_history = app.input.trim().to_string();
+            if !trimmed_for_history.is_empty() {
+                app.input_history.push(trimmed_for_history);
+            }
+            app.input_history_index = None;
+            app.input_saved.clear();
+
             if app.input.trim().eq_ignore_ascii_case("/exit") {
                 return Ok(true);
             }

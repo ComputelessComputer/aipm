@@ -52,12 +52,12 @@ fn default_true() -> bool {
 fn default_buckets() -> Vec<BucketDef> {
     vec![
         BucketDef {
-            name: "Team".to_string(),
-            description: Some("Onboarding, coordination, guiding your crew".to_string()),
+            name: "Personal".to_string(),
+            description: Some("Your own tasks, reviews, and personal direction".to_string()),
         },
         BucketDef {
-            name: "John-only".to_string(),
-            description: Some("Marketing strategy, public content, key direction".to_string()),
+            name: "Team".to_string(),
+            description: Some("Onboarding, coordination, guiding your crew".to_string()),
         },
         BucketDef {
             name: "Admin".to_string(),
@@ -161,6 +161,10 @@ impl Storage {
         // Auto-migrate from legacy JSON if needed.
         if let Err(err) = storage.migrate_from_json() {
             eprintln!("Migration warning: {err}");
+        }
+        // Migrate "John" / "John-only" buckets to "Personal".
+        if let Err(err) = storage.migrate_bucket_names() {
+            eprintln!("Bucket migration warning: {err}");
         }
         Some(storage)
     }
@@ -318,9 +322,77 @@ impl Storage {
         fs::rename(&json_path, &bak)?;
 
         eprintln!(
-            "Migrated {} tasks from tasks.json → tasks/ directory",
+            "Migrated {} tasks from tasks.json -> tasks/ directory",
             store.tasks.len()
         );
+
+        Ok(())
+    }
+
+    /// Rename legacy "John" and "John-only" buckets to "Personal".
+    fn migrate_bucket_names(&self) -> io::Result<()> {
+        let tasks_dir = self.dir.join("tasks");
+        if !tasks_dir.is_dir() {
+            return Ok(());
+        }
+
+        let old_names: &[&str] = &["John", "John-only"];
+        let new_name = "Personal";
+
+        for entry in fs::read_dir(&tasks_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let content = fs::read_to_string(&path)?;
+            let mut changed = content.clone();
+            for old in old_names {
+                // Match the YAML front-matter line exactly.
+                let from = format!("bucket: {}", old);
+                let to = format!("bucket: {}", new_name);
+                if changed.contains(&from) {
+                    changed = changed.replace(&from, &to);
+                }
+            }
+            if changed != content {
+                fs::write(&path, &changed)?;
+            }
+        }
+
+        // Also migrate bucket definitions in settings.
+        let yaml_path = self.dir.join("settings.yaml");
+        if yaml_path.is_file() {
+            let raw = fs::read_to_string(&yaml_path)?;
+            let mut settings: AiSettings = serde_yaml::from_str(&raw)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            let mut dirty = false;
+            for bucket in &mut settings.buckets {
+                if old_names
+                    .iter()
+                    .any(|o| bucket.name.eq_ignore_ascii_case(o))
+                {
+                    bucket.name = new_name.to_string();
+                    dirty = true;
+                }
+            }
+            // Deduplicate: if migration created two "Personal" entries, keep only the first.
+            if dirty {
+                let mut seen = false;
+                settings.buckets.retain(|b| {
+                    if b.name == new_name {
+                        if seen {
+                            return false;
+                        }
+                        seen = true;
+                    }
+                    true
+                });
+                let yaml = serde_yaml::to_string(&settings)
+                    .map_err(|e| io::Error::other(e.to_string()))?;
+                fs::write(&yaml_path, yaml)?;
+            }
+        }
 
         Ok(())
     }
