@@ -10,5 +10,7 @@
 
 ## General
 
+- Run `cargo fmt` before committing to ensure consistent formatting.
+- Run `cargo clippy` and fix any warnings before committing.
 - Run `cargo build` after code changes to verify compilation before committing.
 - Keep commits small and reviewable.
