@@ -35,16 +35,10 @@ const MODEL_OPTIONS: &[&str] = &[
     "claude-opus-4-6",
     "claude-opus-4-5",
     "claude-sonnet-4-5",
-    "claude-haiku-4-5",
     // OpenAI
-    "gpt-5.2-chat-latest",
-    "gpt-5.2",
-    "gpt-5.1-chat-latest",
-    "gpt-5-chat",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-4o",
-    "gpt-4o-mini",
+    "codex-mini-latest",
+    "o3",
+    "o4-mini",
 ];
 
 impl Tab {
@@ -114,17 +108,19 @@ impl EditField {
 enum SettingsField {
     OwnerName,
     AiEnabled,
-    ApiKey,
+    OpenAiKey,
+    AnthropicKey,
     Model,
     ApiUrl,
     Timeout,
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 6] = [
+    const ALL: [SettingsField; 7] = [
         SettingsField::OwnerName,
         SettingsField::AiEnabled,
-        SettingsField::ApiKey,
+        SettingsField::OpenAiKey,
+        SettingsField::AnthropicKey,
         SettingsField::Model,
         SettingsField::ApiUrl,
         SettingsField::Timeout,
@@ -134,7 +130,8 @@ impl SettingsField {
         match self {
             SettingsField::OwnerName => "Owner Name",
             SettingsField::AiEnabled => "AI Enabled",
-            SettingsField::ApiKey => "API Key",
+            SettingsField::OpenAiKey => "OpenAI Key",
+            SettingsField::AnthropicKey => "Anthropic Key",
             SettingsField::Model => "Model",
             SettingsField::ApiUrl => "API URL",
             SettingsField::Timeout => "Timeout (sec)",
@@ -1439,8 +1436,12 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 persist_settings(app);
                 rebuild_ai(app);
             }
-            SettingsField::ApiKey => {
-                app.settings_buf = app.settings.api_key.clone();
+            SettingsField::OpenAiKey => {
+                app.settings_buf = app.settings.openai_api_key.clone();
+                app.settings_editing = true;
+            }
+            SettingsField::AnthropicKey => {
+                app.settings_buf = app.settings.anthropic_api_key.clone();
                 app.settings_editing = true;
             }
             SettingsField::Model => {
@@ -1509,7 +1510,12 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 SettingsField::OwnerName => {
                     app.settings.owner_name = app.settings_buf.trim().to_string();
                 }
-                SettingsField::ApiKey => app.settings.api_key = app.settings_buf.clone(),
+                SettingsField::OpenAiKey => {
+                    app.settings.openai_api_key = app.settings_buf.clone();
+                }
+                SettingsField::AnthropicKey => {
+                    app.settings.anthropic_api_key = app.settings_buf.clone();
+                }
                 SettingsField::Model => app.settings.model = app.settings_buf.clone(),
                 SettingsField::ApiUrl => app.settings.api_url = app.settings_buf.clone(),
                 SettingsField::Timeout => {
@@ -3209,7 +3215,8 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                     "Off".to_string()
                 }
             }
-            SettingsField::ApiKey => mask_api_key(&app.settings.api_key),
+            SettingsField::OpenAiKey => mask_api_key(&app.settings.openai_api_key),
+            SettingsField::AnthropicKey => mask_api_key(&app.settings.anthropic_api_key),
             SettingsField::Model => {
                 if app.settings.model.is_empty() {
                     "(default)".to_string()
@@ -3262,7 +3269,9 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         "AI active \u{2713}"
     } else if !app.settings.enabled {
         "AI disabled"
-    } else if app.settings.api_key.trim().is_empty() {
+    } else if app.settings.openai_api_key.trim().is_empty()
+        && app.settings.anthropic_api_key.trim().is_empty()
+    {
         "No API key configured"
     } else {
         "AI inactive"

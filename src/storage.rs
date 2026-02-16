@@ -11,7 +11,13 @@ use crate::model::Task;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiSettings {
     pub enabled: bool,
-    pub api_key: String,
+    #[serde(default)]
+    pub openai_api_key: String,
+    #[serde(default)]
+    pub anthropic_api_key: String,
+    /// Legacy single key — migrated into the per-provider fields on load.
+    #[serde(default, skip_serializing)]
+    api_key: String,
     pub model: String,
     pub api_url: String,
     pub timeout_secs: u64,
@@ -27,11 +33,30 @@ impl Default for AiSettings {
     fn default() -> Self {
         AiSettings {
             enabled: true,
+            openai_api_key: String::new(),
+            anthropic_api_key: String::new(),
             api_key: String::new(),
-            model: "gpt-5.2-chat-latest".to_string(),
-            api_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            api_url: String::new(),
             timeout_secs: 30,
             owner_name: "John".to_string(),
+        }
+    }
+}
+
+impl AiSettings {
+    /// Migrate the legacy single `api_key` into per-provider fields.
+    pub fn migrate_legacy_key(&mut self) {
+        if !self.api_key.is_empty() {
+            // Best-effort: if the key looks like an Anthropic key, put it there.
+            if self.api_key.starts_with("sk-ant-") {
+                if self.anthropic_api_key.is_empty() {
+                    self.anthropic_api_key = self.api_key.clone();
+                }
+            } else if self.openai_api_key.is_empty() {
+                self.openai_api_key = self.api_key.clone();
+            }
+            self.api_key.clear();
         }
     }
 }
@@ -94,8 +119,9 @@ impl Storage {
             return Ok(AiSettings::default());
         }
         let contents = fs::read_to_string(&path)?;
-        let settings: AiSettings = serde_json::from_str(&contents)
+        let mut settings: AiSettings = serde_json::from_str(&contents)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        settings.migrate_legacy_key();
         Ok(settings)
     }
 

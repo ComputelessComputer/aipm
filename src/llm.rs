@@ -137,13 +137,17 @@ impl AiRuntime {
                         .ok()
                         .filter(|s| !s.trim().is_empty())
                 })
-                .unwrap_or_else(|| "gpt-5.2-chat-latest".to_string())
+                .unwrap_or_else(|| "claude-sonnet-4-5".to_string())
         };
 
         let provider = detect_provider(&model);
 
-        let key = if !settings.api_key.trim().is_empty() {
-            settings.api_key.clone()
+        let settings_key = match provider {
+            Provider::Anthropic => &settings.anthropic_api_key,
+            Provider::OpenAi => &settings.openai_api_key,
+        };
+        let key = if !settings_key.trim().is_empty() {
+            settings_key.clone()
         } else {
             match provider {
                 Provider::Anthropic => env::var("ANTHROPIC_API_KEY").ok()?,
