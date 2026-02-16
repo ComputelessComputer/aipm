@@ -667,6 +667,148 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 return Ok(false);
             }
 
+            // /buckets: list all buckets.
+            if app.input.trim().eq_ignore_ascii_case("/buckets") {
+                let names: Vec<String> = app
+                    .settings
+                    .buckets
+                    .iter()
+                    .map(|b| {
+                        if let Some(desc) = &b.description {
+                            format!("{} — {}", b.name, desc)
+                        } else {
+                            b.name.clone()
+                        }
+                    })
+                    .collect();
+                app.status = Some((format!("Buckets: {}", names.join(", ")), Instant::now(), false));
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
+            // /bucket add <name>: add a new bucket.
+            if let Some(rest) = app.input.trim().strip_prefix("/bucket add ") {
+                let name = rest.trim().to_string();
+                if name.is_empty() {
+                    app.status = Some(("Usage: /bucket add <name>".to_string(), Instant::now(), false));
+                } else if app.settings.buckets.iter().any(|b| b.name.eq_ignore_ascii_case(&name)) {
+                    app.status = Some((format!("Bucket \"{}\" already exists", name), Instant::now(), false));
+                } else {
+                    app.settings.buckets.push(crate::model::BucketDef {
+                        name: name.clone(),
+                        description: None,
+                    });
+                    app.bucket_scrolls.push(0);
+                    persist_settings(app);
+                    app.status = Some((format!("Added bucket: {}", name), Instant::now(), false));
+                }
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
+            // /bucket rename <old> <new>: rename a bucket.
+            if let Some(rest) = app.input.trim().strip_prefix("/bucket rename ") {
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                if parts.len() < 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
+                    app.status = Some(("Usage: /bucket rename <old> <new>".to_string(), Instant::now(), false));
+                } else {
+                    let old = parts[0].trim();
+                    let new_name = parts[1].trim().to_string();
+                    if let Some(bucket) = app.settings.buckets.iter_mut().find(|b| b.name.eq_ignore_ascii_case(old)) {
+                        let old_name = bucket.name.clone();
+                        bucket.name = new_name.clone();
+                        // Update all tasks in that bucket.
+                        for task in &mut app.tasks {
+                            if task.bucket.eq_ignore_ascii_case(&old_name) {
+                                task.bucket = new_name.clone();
+                            }
+                        }
+                        persist_settings(app);
+                        persist(app);
+                        app.status = Some((format!("Renamed: {} → {}", old_name, new_name), Instant::now(), false));
+                    } else {
+                        app.status = Some((format!("Bucket \"{}\" not found", old), Instant::now(), false));
+                    }
+                }
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
+            // /bucket desc <name> <description>: set bucket description.
+            if let Some(rest) = app.input.trim().strip_prefix("/bucket desc ") {
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                if parts.is_empty() || parts[0].trim().is_empty() {
+                    app.status = Some(("Usage: /bucket desc <name> <description>".to_string(), Instant::now(), false));
+                } else {
+                    let name = parts[0].trim();
+                    let desc = parts.get(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    if let Some(bucket) = app.settings.buckets.iter_mut().find(|b| b.name.eq_ignore_ascii_case(name)) {
+                        let bname = bucket.name.clone();
+                        bucket.description = desc.clone();
+                        let msg = if desc.is_some() {
+                            format!("Updated description for {}", bname)
+                        } else {
+                            format!("Cleared description for {}", bname)
+                        };
+                        persist_settings(app);
+                        app.status = Some((msg, Instant::now(), false));
+                    } else {
+                        app.status = Some((format!("Bucket \"{}\" not found", name), Instant::now(), false));
+                    }
+                }
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
+            // /bucket delete <name>: delete a bucket (moves tasks to first bucket).
+            if let Some(rest) = app.input.trim().strip_prefix("/bucket delete ") {
+                let name = rest.trim();
+                if name.is_empty() {
+                    app.status = Some(("Usage: /bucket delete <name>".to_string(), Instant::now(), false));
+                } else if app.settings.buckets.len() <= 1 {
+                    app.status = Some(("Cannot delete the last bucket".to_string(), Instant::now(), false));
+                } else if let Some(pos) = app.settings.buckets.iter().position(|b| b.name.eq_ignore_ascii_case(name)) {
+                    let removed_name = app.settings.buckets[pos].name.clone();
+                    app.settings.buckets.remove(pos);
+                    if pos < app.bucket_scrolls.len() {
+                        app.bucket_scrolls.remove(pos);
+                    }
+                    // Move tasks from deleted bucket to first remaining bucket.
+                    let fallback = default_bucket_name(&app.settings);
+                    let mut moved = 0usize;
+                    for task in &mut app.tasks {
+                        if task.bucket.eq_ignore_ascii_case(&removed_name) {
+                            task.bucket = fallback.clone();
+                            moved += 1;
+                        }
+                    }
+                    // Clamp selected_bucket.
+                    if app.selected_bucket >= app.settings.buckets.len() {
+                        app.selected_bucket = app.settings.buckets.len().saturating_sub(1);
+                    }
+                    persist_settings(app);
+                    if moved > 0 {
+                        persist(app);
+                    }
+                    let msg = if moved > 0 {
+                        format!("Deleted bucket \"{}\" ({} task{} → {})", removed_name, moved, if moved == 1 { "" } else { "s" }, fallback)
+                    } else {
+                        format!("Deleted bucket \"{}\" (no tasks affected)", removed_name)
+                    };
+                    app.status = Some((msg, Instant::now(), false));
+                    ensure_default_selection(app);
+                } else {
+                    app.status = Some((format!("Bucket \"{}\" not found", name), Instant::now(), false));
+                }
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
+            }
+
             // Reload tasks from disk before processing input to pick up external changes.
             if let Some(storage) = &app.storage {
                 if let Ok(fresh) = storage.reload_tasks() {
