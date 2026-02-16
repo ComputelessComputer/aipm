@@ -214,6 +214,9 @@ struct App {
     settings_field: SettingsField,
     settings_buf: String,
     settings_editing: bool,
+
+    chat_history: Vec<llm::ChatEntry>,
+    last_triage_input: String,
 }
 
 struct TerminalGuard;
@@ -301,6 +304,8 @@ fn main() -> io::Result<()> {
         settings_field: SettingsField::AiEnabled,
         settings_buf: String::new(),
         settings_editing: false,
+        chat_history: Vec::new(),
+        last_triage_input: String::new(),
     };
 
     ensure_default_selection(&mut app);
@@ -613,6 +618,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         if let Some(ai) = &app.ai {
                             let context = build_ai_context(&app.tasks);
                             let triage_ctx = build_triage_context(&app.tasks);
+                            app.last_triage_input = instruction.clone();
                             ai.enqueue(llm::AiJob {
                                 task_id: Uuid::nil(),
                                 title: String::new(),
@@ -625,7 +631,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                 task_snapshot: None,
                                 triage_input: Some(instruction),
                                 triage_context: Some(triage_ctx),
-                    chat_history: Vec::new(),
+                                chat_history: app.chat_history.clone(),
                             });
                             app.status =
                                 Some(("AI decomposing…".to_string(), Instant::now(), true));
@@ -680,6 +686,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(ai) = &app.ai {
                 let context = build_ai_context(&app.tasks);
                 let triage_ctx = build_triage_context(&app.tasks);
+                app.last_triage_input = raw_input.clone();
                 ai.enqueue(llm::AiJob {
                     task_id: Uuid::nil(),
                     title: String::new(),
@@ -692,7 +699,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     task_snapshot: None,
                     triage_input: Some(raw_input),
                     triage_context: Some(triage_ctx),
-                    chat_history: Vec::new(),
+                    chat_history: app.chat_history.clone(),
                 });
                 app.status = Some(("AI thinking…".to_string(), Instant::now(), true));
             } else {
@@ -1638,9 +1645,61 @@ fn poll_ai(app: &mut App) -> bool {
                             &result.update.dependencies,
                         );
                     }
-                    app.status =
-                        Some((format!("AI created: {}", task.title), Instant::now(), false));
+                    let parent_id = task.id;
+                    let status_title = task.title.clone();
                     app.tasks.push(task);
+                    if !result.sub_task_specs.is_empty() {
+                        let count = result.sub_task_specs.len();
+                        let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                        for spec in result.sub_task_specs.iter() {
+                            let sub_bucket = spec.bucket.unwrap_or(bucket);
+                            let mut sub = Task::new(sub_bucket, spec.title.clone(), now);
+                            sub.parent_id = Some(parent_id);
+                            sub.description = spec.description.clone();
+                            if let Some(p) = spec.priority {
+                                sub.priority = p;
+                            }
+                            if let Some(prog) = spec.progress {
+                                sub.set_progress(prog, now);
+                            }
+                            if let Some(due) = spec.due_date {
+                                sub.due_date = Some(due);
+                            }
+                            new_ids.push(sub.id);
+                            app.tasks.push(sub);
+                        }
+                        for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                            if spec.depends_on.is_empty() {
+                                continue;
+                            }
+                            let task_id = new_ids[i];
+                            let dep_ids: Vec<Uuid> = spec
+                                .depends_on
+                                .iter()
+                                .filter_map(|&idx| new_ids.get(idx).copied())
+                                .filter(|&dep_id| dep_id != task_id)
+                                .collect();
+                            if let Some(t) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                                t.dependencies = dep_ids;
+                            }
+                        }
+                        app.status = Some((
+                            format!(
+                                "AI created: {} (+{} sub-task{})",
+                                status_title,
+                                count,
+                                if count == 1 { "" } else { "s" }
+                            ),
+                            Instant::now(),
+                            false,
+                        ));
+                    } else {
+                        app.status = Some((
+                            format!("AI created: {}", status_title),
+                            Instant::now(),
+                            false,
+                        ));
+                    }
                     changed = true;
                 }
                 llm::TriageAction::Update(prefix) => {
@@ -1886,6 +1945,21 @@ fn poll_ai(app: &mut App) -> bool {
                             true,
                         ));
                     }
+                }
+            }
+            // Update chat history after triage.
+            if !app.last_triage_input.is_empty() {
+                let summary = app
+                    .status
+                    .as_ref()
+                    .map(|(s, _, _)| s.clone())
+                    .unwrap_or_default();
+                app.chat_history.push(llm::ChatEntry {
+                    user_input: std::mem::take(&mut app.last_triage_input),
+                    ai_summary: summary,
+                });
+                if app.chat_history.len() > 20 {
+                    app.chat_history.drain(..app.chat_history.len() - 20);
                 }
             }
             if changed {
@@ -4118,6 +4192,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             &result.update.dependencies,
                         );
                     }
+                    let parent_id = task.id;
                     println!(
                         "  + Created \"{}\" [{}]",
                         task.title,
@@ -4125,6 +4200,44 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                     );
                     tasks.push(task);
                     total_changes += 1;
+                    if !result.sub_task_specs.is_empty() {
+                        let count = result.sub_task_specs.len();
+                        let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                        for spec in result.sub_task_specs.iter() {
+                            let sub_bucket = spec.bucket.unwrap_or(bucket);
+                            let mut sub = Task::new(sub_bucket, spec.title.clone(), now);
+                            sub.parent_id = Some(parent_id);
+                            sub.description = spec.description.clone();
+                            if let Some(p) = spec.priority {
+                                sub.priority = p;
+                            }
+                            if let Some(prog) = spec.progress {
+                                sub.set_progress(prog, now);
+                            }
+                            if let Some(due) = spec.due_date {
+                                sub.due_date = Some(due);
+                            }
+                            new_ids.push(sub.id);
+                            println!("    ↳ Created sub-task \"{}\"", sub.title);
+                            tasks.push(sub);
+                        }
+                        for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                            if spec.depends_on.is_empty() {
+                                continue;
+                            }
+                            let task_id = new_ids[i];
+                            let dep_ids: Vec<Uuid> = spec
+                                .depends_on
+                                .iter()
+                                .filter_map(|&idx| new_ids.get(idx).copied())
+                                .filter(|&dep_id| dep_id != task_id)
+                                .collect();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                                t.dependencies = dep_ids;
+                            }
+                        }
+                        total_changes += count as u32;
+                    }
                 }
                 llm::TriageAction::Update(prefix) => {
                     let target_id = tasks.iter().find_map(|t| {
