@@ -5,7 +5,7 @@ use crate::model::{Bucket, Priority};
 #[derive(Debug, Clone)]
 pub struct NewTaskHints {
     pub bucket: Bucket,
-    pub bucket_locked: bool,
+    pub _bucket_locked: bool,
     pub priority: Option<Priority>,
     pub due_date: Option<NaiveDate>,
     pub title: String,
@@ -37,7 +37,7 @@ pub fn infer_new_task(input: &str) -> Option<NewTaskHints> {
 
     Some(NewTaskHints {
         bucket,
-        bucket_locked,
+        _bucket_locked: bucket_locked,
         priority,
         due_date,
         title: title.to_string(),

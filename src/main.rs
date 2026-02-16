@@ -42,8 +42,6 @@ const MODEL_OPTIONS: &[&str] = &[
 ];
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Default, Tab::Timeline, Tab::Kanban, Tab::Settings];
-
     fn next(self) -> Tab {
         match self {
             Tab::Default => Tab::Timeline,
@@ -182,7 +180,7 @@ struct App {
 
     kanban_stage: Progress,
     kanban_selected: Option<Uuid>,
-    kanban_scroll: [usize; 4],
+    _kanban_scroll: [usize; 4],
 
     confirm_delete_id: Option<Uuid>,
 
@@ -271,7 +269,7 @@ fn main() -> io::Result<()> {
         timeline_scroll: 0,
         kanban_stage: Progress::Backlog,
         kanban_selected: None,
-        kanban_scroll: [0; 4],
+        _kanban_scroll: [0; 4],
         confirm_delete_id: None,
         settings,
         settings_field: SettingsField::AiEnabled,
@@ -1559,7 +1557,7 @@ fn poll_ai(app: &mut App) -> bool {
                 llm::TriageAction::Update(prefix) => {
                     let target_id = app.tasks.iter().find_map(|t| {
                         let short = t.id.to_string().chars().take(8).collect::<String>();
-                        if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                        if short.eq_ignore_ascii_case(prefix) {
                             Some(t.id)
                         } else {
                             None
@@ -1592,7 +1590,7 @@ fn poll_ai(app: &mut App) -> bool {
                 llm::TriageAction::Delete(prefix) => {
                     let target = app.tasks.iter().position(|t| {
                         let short = t.id.to_string().chars().take(8).collect::<String>();
-                        short.to_ascii_lowercase() == prefix.to_ascii_lowercase()
+                        short.eq_ignore_ascii_case(prefix)
                     });
                     if let Some(pos) = target {
                         let title = app.tasks[pos].title.clone();
@@ -1617,7 +1615,7 @@ fn poll_ai(app: &mut App) -> bool {
                         .and_then(|prefix| {
                             app.tasks.iter().find_map(|t| {
                                 let short = t.id.to_string().chars().take(8).collect::<String>();
-                                if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                if short.eq_ignore_ascii_case(prefix) {
                                     Some(t.id)
                                 } else {
                                     None
@@ -1678,26 +1676,25 @@ fn poll_ai(app: &mut App) -> bool {
                     instruction,
                 } => {
                     // Resolve target IDs: "all" means every task.
-                    let task_ids: Vec<Uuid> = if targets.len() == 1
-                        && targets[0].eq_ignore_ascii_case("all")
-                    {
-                        app.tasks.iter().map(|t| t.id).collect()
-                    } else {
-                        targets
-                            .iter()
-                            .filter_map(|prefix| {
-                                app.tasks.iter().find_map(|t| {
-                                    let short =
-                                        t.id.to_string().chars().take(8).collect::<String>();
-                                    if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
-                                        Some(t.id)
-                                    } else {
-                                        None
-                                    }
+                    let task_ids: Vec<Uuid> =
+                        if targets.len() == 1 && targets[0].eq_ignore_ascii_case("all") {
+                            app.tasks.iter().map(|t| t.id).collect()
+                        } else {
+                            targets
+                                .iter()
+                                .filter_map(|prefix| {
+                                    app.tasks.iter().find_map(|t| {
+                                        let short =
+                                            t.id.to_string().chars().take(8).collect::<String>();
+                                        if short.eq_ignore_ascii_case(prefix) {
+                                            Some(t.id)
+                                        } else {
+                                            None
+                                        }
+                                    })
                                 })
-                            })
-                            .collect()
-                    };
+                                .collect()
+                        };
 
                     if task_ids.is_empty() {
                         app.status = Some((
@@ -2736,7 +2733,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         }
 
         // Overlay date labels onto the bar area
-        if bar_len >= both_len + 1 {
+        if bar_len > both_len {
             // Both labels fit inside the bar
             for (j, ch) in start_label.chars().enumerate() {
                 bar_chars[bar_start + j] = ch;
@@ -2745,7 +2742,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
             for (j, ch) in end_label.chars().enumerate() {
                 bar_chars[end_pos + j] = ch;
             }
-        } else if bar_len >= start_label.len() + 1 {
+        } else if bar_len > start_label.len() {
             // Only start label fits inside
             for (j, ch) in start_label.chars().enumerate() {
                 bar_chars[bar_start + j] = ch;
@@ -2759,7 +2756,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
             }
         } else {
             // Labels outside the bar
-            if bar_start >= start_label.len() + 1 {
+            if bar_start > start_label.len() {
                 let before = bar_start - start_label.len() - 1;
                 for (j, ch) in start_label.chars().enumerate() {
                     bar_chars[before + j] = ch;
@@ -3156,7 +3153,7 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
     };
 
     let is_error = status.starts_with("AI error") || status.starts_with("Save failed");
-    let box_width = (cols as usize).min(45).max(20);
+    let box_width = (cols as usize).clamp(20, 45);
     let inner_w = box_width.saturating_sub(4);
 
     // Word-wrap the message.
@@ -3277,7 +3274,7 @@ fn render_delete_confirm(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -
         .map(|t| t.title.as_str())
         .unwrap_or("Unknown");
 
-    let box_width = (cols as usize).min(50).max(30);
+    let box_width = (cols as usize).clamp(30, 50);
     let box_height = 5u16;
     let x0 = (cols.saturating_sub(box_width as u16)) / 2;
     let y0 = (rows.saturating_sub(box_height)) / 2;
@@ -3342,7 +3339,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         return Ok(());
     };
 
-    let box_width = (cols as usize).min(60).max(40);
+    let box_width = (cols as usize).clamp(40, 60);
     let label_w = 14usize;
     let value_w = box_width.saturating_sub(label_w + 4);
 
@@ -3649,7 +3646,7 @@ fn wrap_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {
                 // Append ellipsis to last line if there's more text.
                 if let Some(last) = lines.last_mut() {
                     if last.width() + 1 < max_width {
-                        last.push_str("…");
+                        last.push('…');
                     }
                 }
                 return lines;
@@ -3863,7 +3860,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                 llm::TriageAction::Update(prefix) => {
                     let target_id = tasks.iter().find_map(|t| {
                         let short = t.id.to_string().chars().take(8).collect::<String>();
-                        if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                        if short.eq_ignore_ascii_case(&prefix) {
                             Some(t.id)
                         } else {
                             None
@@ -3888,7 +3885,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                 llm::TriageAction::Delete(prefix) => {
                     let target = tasks.iter().position(|t| {
                         let short = t.id.to_string().chars().take(8).collect::<String>();
-                        short.to_ascii_lowercase() == prefix.to_ascii_lowercase()
+                        short.eq_ignore_ascii_case(&prefix)
                     });
                     if let Some(pos) = target {
                         let title = tasks[pos].title.clone();
@@ -3909,7 +3906,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                     let parent_uuid = target_id.as_ref().and_then(|prefix| {
                         tasks.iter().find_map(|t| {
                             let short = t.id.to_string().chars().take(8).collect::<String>();
-                            if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                            if short.eq_ignore_ascii_case(prefix) {
                                 Some(t.id)
                             } else {
                                 None
@@ -3981,30 +3978,29 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                     targets,
                     instruction,
                 } => {
-                    let task_ids: Vec<Uuid> = if targets.len() == 1
-                        && targets[0].eq_ignore_ascii_case("all")
-                    {
-                        tasks
-                            .iter()
-                            .filter(|t| t.parent_id.is_none())
-                            .map(|t| t.id)
-                            .collect()
-                    } else {
-                        targets
-                            .iter()
-                            .filter_map(|prefix| {
-                                tasks.iter().find_map(|t| {
-                                    let short =
-                                        t.id.to_string().chars().take(8).collect::<String>();
-                                    if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
-                                        Some(t.id)
-                                    } else {
-                                        None
-                                    }
+                    let task_ids: Vec<Uuid> =
+                        if targets.len() == 1 && targets[0].eq_ignore_ascii_case("all") {
+                            tasks
+                                .iter()
+                                .filter(|t| t.parent_id.is_none())
+                                .map(|t| t.id)
+                                .collect()
+                        } else {
+                            targets
+                                .iter()
+                                .filter_map(|prefix| {
+                                    tasks.iter().find_map(|t| {
+                                        let short =
+                                            t.id.to_string().chars().take(8).collect::<String>();
+                                        if short.eq_ignore_ascii_case(prefix) {
+                                            Some(t.id)
+                                        } else {
+                                            None
+                                        }
+                                    })
                                 })
-                            })
-                            .collect()
-                    };
+                                .collect()
+                        };
 
                     if task_ids.is_empty() {
                         eprintln!("  Warning: no matching tasks found");

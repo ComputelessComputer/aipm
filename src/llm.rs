@@ -277,7 +277,7 @@ fn enrich_with_openai(cfg: &OpenAiConfig, job: &AiJob) -> AiResult {
 
     let content = chat
         .choices
-        .get(0)
+        .first()
         .and_then(|c| c.message.content.as_deref())
         .unwrap_or("");
 
@@ -509,7 +509,7 @@ fn edit_task_with_openai(cfg: &OpenAiConfig, job: &AiJob, instruction: &str) -> 
 
     let content = chat
         .choices
-        .get(0)
+        .first()
         .and_then(|c| c.message.content.as_deref())
         .unwrap_or("");
 
@@ -725,7 +725,7 @@ fn triage_with_openai(cfg: &OpenAiConfig, job: &AiJob, raw_input: &str) -> AiRes
 
     let content = chat
         .choices
-        .get(0)
+        .first()
         .and_then(|c| c.message.content.as_deref())
         .unwrap_or("");
 

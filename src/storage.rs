@@ -72,7 +72,7 @@ impl Storage {
             tasks: tasks.to_vec(),
         };
         let json = serde_json::to_string_pretty(&store)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
 
         let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, json)?;
@@ -95,7 +95,7 @@ impl Storage {
         let path = self.dir.join("settings.json");
         fs::create_dir_all(&self.dir)?;
         let json = serde_json::to_string_pretty(settings)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
         let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, json)?;
         fs::rename(&tmp_path, &path)?;
