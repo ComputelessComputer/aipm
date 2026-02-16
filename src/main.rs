@@ -19,7 +19,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{children_of, Progress, Task};
+use crate::model::{children_of, Priority, Progress, Task};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +202,7 @@ struct App {
 
     kanban_stage: Progress,
     kanban_selected: Option<Uuid>,
-    _kanban_scroll: [usize; 4],
+    kanban_scroll: [usize; 4],
 
     confirm_delete_id: Option<Uuid>,
 
@@ -294,7 +294,7 @@ fn main() -> io::Result<()> {
         timeline_scroll: 0,
         kanban_stage: Progress::Backlog,
         kanban_selected: None,
-        _kanban_scroll: [0; 4],
+        kanban_scroll: [0; 4],
         confirm_delete_id: None,
         settings,
         settings_field: SettingsField::AiEnabled,
@@ -4450,6 +4450,15 @@ fn progress_color(progress: Progress) -> Color {
         Progress::InProgress => Color::Yellow,
         Progress::Todo => Color::Blue,
         Progress::Backlog => Color::DarkGrey,
+    }
+}
+
+fn priority_color(priority: Priority) -> Color {
+    match priority {
+        Priority::Critical => Color::Red,
+        Priority::High => Color::Yellow,
+        Priority::Medium => Color::White,
+        Priority::Low => Color::DarkGrey,
     }
 }
 
