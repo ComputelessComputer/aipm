@@ -105,6 +105,12 @@ impl EditField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BucketEditField {
+    Name,
+    Description,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsField {
     OwnerName,
     AiEnabled,
@@ -206,6 +212,12 @@ struct App {
 
     confirm_delete_id: Option<Uuid>,
 
+    bucket_header_selected: bool,
+    bucket_edit_active: bool,
+    bucket_edit_field: BucketEditField,
+    bucket_edit_buf: String,
+    bucket_editing_text: bool,
+
     settings: AiSettings,
     settings_field: SettingsField,
     settings_buf: String,
@@ -296,6 +308,11 @@ fn main() -> io::Result<()> {
         kanban_selected: None,
         kanban_scroll: [0; 4],
         confirm_delete_id: None,
+        bucket_header_selected: false,
+        bucket_edit_active: false,
+        bucket_edit_field: BucketEditField::Name,
+        bucket_edit_buf: String::new(),
+        bucket_editing_text: false,
         settings,
         settings_field: SettingsField::AiEnabled,
         settings_buf: String::new(),
@@ -346,6 +363,8 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
             let prev_focus = app.focus;
             let prev_edit = app.edit_task_id;
             let prev_confirm = app.confirm_delete_id;
+            let prev_bucket_edit = app.bucket_edit_active;
+            let prev_header_sel = app.bucket_header_selected;
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(app, key)? {
@@ -357,6 +376,8 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
                         || app.focus != prev_focus
                         || app.edit_task_id != prev_edit
                         || app.confirm_delete_id != prev_confirm
+                        || app.bucket_edit_active != prev_bucket_edit
+                        || app.bucket_header_selected != prev_header_sel
                     {
                         needs_clear = true;
                     }
@@ -390,6 +411,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     // Delete confirmation intercepts all keys.
     if app.confirm_delete_id.is_some() {
         return handle_confirm_delete_key(app, key);
+    }
+
+    // Bucket edit overlay intercepts all keys.
+    if app.bucket_edit_active {
+        return handle_bucket_edit_key(app, key);
     }
 
     // Edit overlay intercepts all keys.
@@ -1146,6 +1172,42 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 }
 
 fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    // ── Bucket header selected ──
+    if app.bucket_header_selected {
+        match key.code {
+            KeyCode::Esc => {
+                app.bucket_header_selected = false;
+                app.focus = Focus::Tabs;
+            }
+            KeyCode::Tab | KeyCode::Char('i') => {
+                app.bucket_header_selected = false;
+                app.focus = Focus::Input;
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                let n = app.settings.buckets.len();
+                if n > 0 {
+                    app.selected_bucket = (app.selected_bucket + n - 1) % n;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                let n = app.settings.buckets.len();
+                if n > 0 {
+                    app.selected_bucket = (app.selected_bucket + 1) % n;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.bucket_header_selected = false;
+                ensure_default_selection(app);
+            }
+            KeyCode::Enter | KeyCode::Char('e') => {
+                open_bucket_edit(app);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // ── Normal task-level board keys ──
     match key.code {
         KeyCode::Esc => {
             app.focus = Focus::Tabs;
@@ -1183,7 +1245,26 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             ensure_default_selection(app);
         }
-        KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
+        KeyCode::Up | KeyCode::Char('k') => {
+            let bname = app
+                .settings
+                .buckets
+                .get(app.selected_bucket)
+                .map(|b| b.name.as_str())
+                .unwrap_or("");
+            let bucket_tasks = bucket_task_indices(&app.tasks, bname, &app.settings);
+            let at_first = app
+                .selected_task_id
+                .and_then(|id| bucket_tasks.iter().position(|&idx| app.tasks[idx].id == id))
+                .map(|pos| pos == 0)
+                .unwrap_or(true);
+            if at_first {
+                app.bucket_header_selected = true;
+                app.selected_task_id = None;
+            } else {
+                move_selection(app, -1);
+            }
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             let bname = app
                 .settings
@@ -1247,6 +1328,110 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 
     Ok(false)
+}
+
+fn open_bucket_edit(app: &mut App) {
+    if app.selected_bucket >= app.settings.buckets.len() {
+        return;
+    }
+    let bucket = &app.settings.buckets[app.selected_bucket];
+    app.bucket_edit_field = BucketEditField::Name;
+    app.bucket_edit_buf = bucket.name.clone();
+    app.bucket_editing_text = false;
+    app.bucket_edit_active = true;
+}
+
+fn handle_bucket_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    if app.bucket_editing_text {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel text editing, reload original value.
+                load_bucket_edit_buf(app);
+                app.bucket_editing_text = false;
+            }
+            KeyCode::Enter => {
+                commit_bucket_edit_buf(app);
+                app.bucket_editing_text = false;
+            }
+            KeyCode::Backspace => {
+                app.bucket_edit_buf.pop();
+            }
+            KeyCode::Char(ch) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.bucket_edit_buf.push(ch);
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Field navigation mode.
+    match key.code {
+        KeyCode::Esc => {
+            app.bucket_edit_active = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.bucket_edit_field = match app.bucket_edit_field {
+                BucketEditField::Name => BucketEditField::Description,
+                BucketEditField::Description => BucketEditField::Name,
+            };
+            load_bucket_edit_buf(app);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.bucket_edit_field = match app.bucket_edit_field {
+                BucketEditField::Name => BucketEditField::Description,
+                BucketEditField::Description => BucketEditField::Name,
+            };
+            load_bucket_edit_buf(app);
+        }
+        KeyCode::Enter => {
+            app.bucket_editing_text = true;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn load_bucket_edit_buf(app: &mut App) {
+    if let Some(bucket) = app.settings.buckets.get(app.selected_bucket) {
+        app.bucket_edit_buf = match app.bucket_edit_field {
+            BucketEditField::Name => bucket.name.clone(),
+            BucketEditField::Description => bucket.description.clone().unwrap_or_default(),
+        };
+    }
+}
+
+fn commit_bucket_edit_buf(app: &mut App) {
+    let idx = app.selected_bucket;
+    let Some(bucket) = app.settings.buckets.get_mut(idx) else {
+        return;
+    };
+    match app.bucket_edit_field {
+        BucketEditField::Name => {
+            let new_name = app.bucket_edit_buf.trim().to_string();
+            if !new_name.is_empty() && new_name != bucket.name {
+                let old_name = bucket.name.clone();
+                bucket.name = new_name.clone();
+                // Update all tasks that reference the old bucket name.
+                for task in &mut app.tasks {
+                    if task.bucket == old_name {
+                        task.bucket = new_name.clone();
+                    }
+                }
+                persist(app);
+            }
+        }
+        BucketEditField::Description => {
+            let new_desc = app.bucket_edit_buf.trim().to_string();
+            bucket.description = if new_desc.is_empty() {
+                None
+            } else {
+                Some(new_desc)
+            };
+        }
+    }
+    persist_settings(app);
 }
 
 fn open_edit(app: &mut App) {
@@ -2842,6 +3027,10 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
         Tab::Settings => render_settings_tab(stdout, app, cols, rows)?,
     }
 
+    if app.bucket_edit_active {
+        render_bucket_edit_overlay(stdout, app, cols, rows)?;
+    }
+
     if app.focus == Focus::Edit {
         render_edit_overlay(stdout, app, cols, rows)?;
     }
@@ -2935,24 +3124,47 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 
     for (i, bucket_def) in app.settings.buckets.iter().enumerate() {
         let x = col_x[i] as u16;
+        let is_header_selected =
+            app.focus == Focus::Board && app.bucket_header_selected && i == app.selected_bucket;
 
         let title = format!(" {}", bucket_def.name);
-        queue!(
-            stdout,
-            MoveTo(x, y_body_top),
-            SetAttribute(Attribute::Bold),
-            Print(clamp_text(&title, col_width)),
-            SetAttribute(Attribute::Reset)
-        )?;
-
         let desc = format!(" {}", bucket_def.description.as_deref().unwrap_or(""));
-        queue!(
-            stdout,
-            MoveTo(x, y_body_top + 1),
-            SetForegroundColor(Color::DarkGrey),
-            Print(clamp_text(&desc, col_width)),
-            ResetColor
-        )?;
+
+        if is_header_selected {
+            queue!(
+                stdout,
+                MoveTo(x, y_body_top),
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                SetAttribute(Attribute::Bold),
+                Print(pad_to_width(&clamp_text(&title, col_width), col_width)),
+                SetAttribute(Attribute::Reset),
+                ResetColor
+            )?;
+            queue!(
+                stdout,
+                MoveTo(x, y_body_top + 1),
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                Print(pad_to_width(&clamp_text(&desc, col_width), col_width)),
+                ResetColor
+            )?;
+        } else {
+            queue!(
+                stdout,
+                MoveTo(x, y_body_top),
+                SetAttribute(Attribute::Bold),
+                Print(clamp_text(&title, col_width)),
+                SetAttribute(Attribute::Reset)
+            )?;
+            queue!(
+                stdout,
+                MoveTo(x, y_body_top + 1),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text(&desc, col_width)),
+                ResetColor
+            )?;
+        }
     }
 
     let y_cards_start = y_body_top + 3;
@@ -4319,6 +4531,134 @@ fn render_delete_confirm(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -
     )?;
 
     queue!(stdout, Hide)?;
+
+    Ok(())
+}
+
+fn render_bucket_edit_overlay(
+    stdout: &mut Stdout,
+    app: &App,
+    cols: u16,
+    rows: u16,
+) -> io::Result<()> {
+    let Some(bucket) = app.settings.buckets.get(app.selected_bucket) else {
+        return Ok(());
+    };
+
+    let box_width = (cols as usize).clamp(30, 50);
+    let label_w = 14usize;
+    let value_w = box_width.saturating_sub(label_w + 4);
+    let box_height = 7u16;
+    let x0 = (cols.saturating_sub(box_width as u16)) / 2;
+    let y0 = (rows.saturating_sub(box_height)) / 2;
+
+    // Clear overlay area.
+    for dy in 0..box_height {
+        queue!(
+            stdout,
+            MoveTo(x0, y0 + dy),
+            Print(pad_to_width("", box_width))
+        )?;
+    }
+
+    // Border top.
+    let border_fill: String = "\u{2500}".repeat(box_width.saturating_sub(16));
+    queue!(
+        stdout,
+        MoveTo(x0, y0),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(
+            &format!("\u{250c}\u{2500} Edit Bucket \u{2500}{} ", border_fill),
+            box_width,
+        )),
+        ResetColor
+    )?;
+
+    let inner_x = x0 + 2;
+    let inner_w = box_width.saturating_sub(4);
+
+    // Fields: Name and Description.
+    for (i, (field, label)) in [
+        (BucketEditField::Name, "Name"),
+        (BucketEditField::Description, "Desc"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let y_line = y0 + 2 + i as u16;
+        let is_current = *field == app.bucket_edit_field;
+
+        let value = if is_current && app.bucket_editing_text {
+            format!("{}\u{258f}", app.bucket_edit_buf)
+        } else if is_current {
+            match field {
+                BucketEditField::Name => bucket.name.clone(),
+                BucketEditField::Description => bucket.description.clone().unwrap_or_default(),
+            }
+        } else {
+            match field {
+                BucketEditField::Name => bucket.name.clone(),
+                BucketEditField::Description => bucket
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "\u{2014}".to_string()),
+            }
+        };
+
+        let label_str = format!("{:<width$}", label, width = label_w);
+        let row_text = format!("{}{}", label_str, clamp_text(&value, value_w));
+
+        queue!(stdout, MoveTo(inner_x, y_line))?;
+        if is_current {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                ResetColor
+            )?;
+        } else {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::White),
+                Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                ResetColor
+            )?;
+        }
+    }
+
+    // Help line.
+    let help = if app.bucket_editing_text {
+        "enter save \u{2022} esc cancel"
+    } else {
+        "enter edit \u{2022} \u{2191}/\u{2193} fields \u{2022} esc close"
+    };
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + box_height - 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, inner_w)),
+        ResetColor
+    )?;
+
+    // Show cursor when editing text.
+    if app.bucket_editing_text {
+        let cursor_x = inner_x as usize + label_w + app.bucket_edit_buf.width();
+        queue!(
+            stdout,
+            MoveTo(
+                (cursor_x as u16).min(cols.saturating_sub(1)),
+                y0 + 2
+                    + match app.bucket_edit_field {
+                        BucketEditField::Name => 0,
+                        BucketEditField::Description => 1,
+                    }
+            ),
+            Show
+        )?;
+    } else {
+        queue!(stdout, Hide)?;
+    }
 
     Ok(())
 }
