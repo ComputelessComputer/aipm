@@ -203,6 +203,17 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    // CLI mode: `aipm "break down all tickets"` — headless AI, no TUI.
+    let positional: Vec<&str> = args[1..]
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(|s| s.as_str())
+        .collect();
+    if !positional.is_empty() {
+        let instruction = positional.join(" ");
+        return run_cli(&instruction);
+    }
+
     let storage = Storage::new();
     let tasks = match &storage {
         Some(s) => match s.load_tasks() {
@@ -3699,13 +3710,408 @@ fn choose_layout(total_width: usize, columns: usize) -> (usize, usize) {
     }
 }
 
+fn run_cli(instruction: &str) -> io::Result<()> {
+    let storage = Storage::new();
+    let mut tasks = match &storage {
+        Some(s) => s.load_tasks().unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let settings = match &storage {
+        Some(s) => s.load_settings().unwrap_or_default(),
+        None => AiSettings::default(),
+    };
+
+    let ai = match llm::AiRuntime::from_settings(&settings) {
+        Some(ai) => ai,
+        None => {
+            eprintln!(
+                "Error: AI not configured. Set OPENAI_API_KEY or configure via the Settings tab."
+            );
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("AI processing: \"{}\"", instruction);
+    eprintln!();
+
+    let context = build_ai_context(&tasks);
+    let triage_ctx = build_triage_context(&tasks);
+    ai.enqueue(llm::AiJob {
+        task_id: Uuid::nil(),
+        title: String::new(),
+        suggested_bucket: Bucket::Team,
+        context,
+        lock_bucket: false,
+        lock_priority: false,
+        lock_due_date: false,
+        edit_instruction: None,
+        task_snapshot: None,
+        triage_input: Some(instruction.to_string()),
+        triage_context: Some(triage_ctx),
+    });
+
+    let mut pending = 1u32;
+    let timeout = std::time::Duration::from_secs(90);
+    let mut total_changes = 0u32;
+    let mut saved = false;
+
+    while pending > 0 {
+        let result = match ai.recv_blocking(timeout) {
+            Some(r) => r,
+            None => {
+                eprintln!("Timeout waiting for AI response.");
+                break;
+            }
+        };
+        pending -= 1;
+
+        if let Some(err) = &result.error {
+            eprintln!("  Error: {}", err);
+            continue;
+        }
+
+        if let Some(action) = result.triage_action.clone() {
+            match action {
+                llm::TriageAction::Create => {
+                    let now = Utc::now();
+                    let title = result
+                        .update
+                        .title
+                        .as_deref()
+                        .unwrap_or("Untitled")
+                        .to_string();
+                    let bucket = result.update.bucket.unwrap_or(Bucket::Team);
+                    let mut task = Task::new(bucket, title, now);
+                    if let Some(desc) = &result.update.description {
+                        task.description = desc.clone();
+                    }
+                    if let Some(progress) = result.update.progress {
+                        task.set_progress(progress, now);
+                    }
+                    if let Some(priority) = result.update.priority {
+                        task.priority = priority;
+                    }
+                    if let Some(due_date) = result.update.due_date {
+                        task.due_date = Some(due_date);
+                    }
+                    if !result.update.dependencies.is_empty() {
+                        task.dependencies = resolve_dependency_prefixes(
+                            &tasks,
+                            task.id,
+                            &result.update.dependencies,
+                        );
+                    }
+                    println!("  + Created \"{}\" [{}]", task.title, task.bucket.title());
+                    tasks.push(task);
+                    total_changes += 1;
+                }
+                llm::TriageAction::Update(prefix) => {
+                    let target_id = tasks.iter().find_map(|t| {
+                        let short = t.id.to_string().chars().take(8).collect::<String>();
+                        if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                            Some(t.id)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(id) = target_id {
+                        let deps = if !result.update.dependencies.is_empty() {
+                            resolve_dependency_prefixes(&tasks, id, &result.update.dependencies)
+                        } else {
+                            Vec::new()
+                        };
+                        if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                            let now = Utc::now();
+                            apply_update(task, &result.update, &deps, now);
+                            println!("  ~ Updated \"{}\"", task.title);
+                            total_changes += 1;
+                        }
+                    } else {
+                        eprintln!("  Warning: task {} not found", prefix);
+                    }
+                }
+                llm::TriageAction::Delete(prefix) => {
+                    let target = tasks.iter().position(|t| {
+                        let short = t.id.to_string().chars().take(8).collect::<String>();
+                        short.to_ascii_lowercase() == prefix.to_ascii_lowercase()
+                    });
+                    if let Some(pos) = target {
+                        let title = tasks[pos].title.clone();
+                        let id = tasks[pos].id;
+                        let child_ids: Vec<Uuid> = children_of(&tasks, id)
+                            .iter()
+                            .map(|&i| tasks[i].id)
+                            .collect();
+                        tasks.retain(|t| !child_ids.contains(&t.id) && t.id != id);
+                        println!("  - Deleted \"{}\"", title);
+                        total_changes += 1;
+                    } else {
+                        eprintln!("  Warning: task {} not found", prefix);
+                    }
+                }
+                llm::TriageAction::Decompose { target_id, specs } => {
+                    let now = Utc::now();
+                    let parent_uuid = target_id.as_ref().and_then(|prefix| {
+                        tasks.iter().find_map(|t| {
+                            let short = t.id.to_string().chars().take(8).collect::<String>();
+                            if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                Some(t.id)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    let parent_title = parent_uuid
+                        .and_then(|id| tasks.iter().find(|t| t.id == id))
+                        .map(|t| t.title.clone())
+                        .unwrap_or_else(|| "(no parent)".to_string());
+                    let default_bucket =
+                        specs.first().and_then(|s| s.bucket).unwrap_or(Bucket::Team);
+                    let count = specs.len();
+                    let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+                    for spec in specs.iter() {
+                        let bucket = spec.bucket.unwrap_or(default_bucket);
+                        let mut task = Task::new(bucket, spec.title.clone(), now);
+                        task.parent_id = parent_uuid;
+                        task.description = spec.description.clone();
+                        if let Some(p) = spec.priority {
+                            task.priority = p;
+                        }
+                        if let Some(prog) = spec.progress {
+                            task.set_progress(prog, now);
+                        }
+                        if let Some(due) = spec.due_date {
+                            task.due_date = Some(due);
+                        }
+                        new_ids.push(task.id);
+                        tasks.push(task);
+                    }
+                    for (i, spec) in specs.iter().enumerate() {
+                        if spec.depends_on.is_empty() {
+                            continue;
+                        }
+                        let task_id = new_ids[i];
+                        let dep_ids: Vec<Uuid> = spec
+                            .depends_on
+                            .iter()
+                            .filter_map(|&idx| new_ids.get(idx).copied())
+                            .filter(|&dep_id| dep_id != task_id)
+                            .collect();
+                        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                            task.dependencies = dep_ids;
+                        }
+                    }
+                    println!(
+                        "  ◆ Decomposed \"{}\" into {} sub-task{}:",
+                        parent_title,
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    );
+                    for (i, spec) in specs.iter().enumerate() {
+                        let deps_str = if spec.depends_on.is_empty() {
+                            String::new()
+                        } else {
+                            let labels: Vec<String> = spec
+                                .depends_on
+                                .iter()
+                                .map(|&idx| format!("{}", idx + 1))
+                                .collect();
+                            format!(" (after: {})", labels.join(", "))
+                        };
+                        println!("    {}. {}{}", i + 1, spec.title, deps_str);
+                    }
+                    total_changes += count as u32;
+                }
+                llm::TriageAction::BulkUpdate {
+                    targets,
+                    instruction,
+                } => {
+                    let task_ids: Vec<Uuid> = if targets.len() == 1
+                        && targets[0].eq_ignore_ascii_case("all")
+                    {
+                        tasks
+                            .iter()
+                            .filter(|t| t.parent_id.is_none())
+                            .map(|t| t.id)
+                            .collect()
+                    } else {
+                        targets
+                            .iter()
+                            .filter_map(|prefix| {
+                                tasks.iter().find_map(|t| {
+                                    let short =
+                                        t.id.to_string().chars().take(8).collect::<String>();
+                                    if short.to_ascii_lowercase() == prefix.to_ascii_lowercase() {
+                                        Some(t.id)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect()
+                    };
+
+                    if task_ids.is_empty() {
+                        eprintln!("  Warning: no matching tasks found");
+                    } else {
+                        let context = build_ai_context(&tasks);
+                        for &tid in &task_ids {
+                            if let Some(task) = tasks.iter().find(|t| t.id == tid) {
+                                let snapshot = format_task_snapshot(task);
+                                ai.enqueue(llm::AiJob {
+                                    task_id: tid,
+                                    title: task.title.clone(),
+                                    suggested_bucket: task.bucket,
+                                    context: context.clone(),
+                                    lock_bucket: false,
+                                    lock_priority: false,
+                                    lock_due_date: false,
+                                    edit_instruction: Some(instruction.clone()),
+                                    task_snapshot: Some(snapshot),
+                                    triage_input: None,
+                                    triage_context: None,
+                                });
+                            }
+                        }
+                        eprintln!(
+                            "  Updating {} task{}…",
+                            task_ids.len(),
+                            if task_ids.len() == 1 { "" } else { "s" }
+                        );
+                        pending += task_ids.len() as u32;
+                    }
+                }
+            }
+        } else {
+            // Non-triage result: edit response (from BulkUpdate fan-out).
+            let parent_id = result.task_id;
+            let task_title = tasks
+                .iter()
+                .find(|t| t.id == parent_id)
+                .map(|t| t.title.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let deps = if !result.update.dependencies.is_empty() {
+                resolve_dependency_prefixes(&tasks, parent_id, &result.update.dependencies)
+            } else {
+                Vec::new()
+            };
+
+            if let Some(task) = tasks.iter_mut().find(|t| t.id == parent_id) {
+                let now = Utc::now();
+                apply_update(task, &result.update, &deps, now);
+            }
+
+            if !result.sub_task_specs.is_empty() {
+                let now = Utc::now();
+                let parent_bucket = tasks
+                    .iter()
+                    .find(|t| t.id == parent_id)
+                    .map(|t| t.bucket)
+                    .unwrap_or(Bucket::Team);
+                let count = result.sub_task_specs.len();
+                let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
+
+                for spec in result.sub_task_specs.iter() {
+                    let bucket = spec.bucket.unwrap_or(parent_bucket);
+                    let mut task = Task::new(bucket, spec.title.clone(), now);
+                    task.parent_id = Some(parent_id);
+                    task.description = spec.description.clone();
+                    if let Some(p) = spec.priority {
+                        task.priority = p;
+                    }
+                    if let Some(prog) = spec.progress {
+                        task.set_progress(prog, now);
+                    }
+                    if let Some(due) = spec.due_date {
+                        task.due_date = Some(due);
+                    }
+                    new_ids.push(task.id);
+                    tasks.push(task);
+                }
+
+                for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                    if spec.depends_on.is_empty() {
+                        continue;
+                    }
+                    let task_id = new_ids[i];
+                    let dep_ids: Vec<Uuid> = spec
+                        .depends_on
+                        .iter()
+                        .filter_map(|&idx| new_ids.get(idx).copied())
+                        .filter(|&dep_id| dep_id != task_id)
+                        .collect();
+                    if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                        task.dependencies = dep_ids;
+                    }
+                }
+
+                println!(
+                    "  ◆ \"{}\" → {} sub-task{}:",
+                    task_title,
+                    count,
+                    if count == 1 { "" } else { "s" }
+                );
+                for (i, spec) in result.sub_task_specs.iter().enumerate() {
+                    let deps_str = if spec.depends_on.is_empty() {
+                        String::new()
+                    } else {
+                        let labels: Vec<String> = spec
+                            .depends_on
+                            .iter()
+                            .map(|&idx| format!("{}", idx + 1))
+                            .collect();
+                        format!(" (after: {})", labels.join(", "))
+                    };
+                    println!("    {}. {}{}", i + 1, spec.title, deps_str);
+                }
+                total_changes += count as u32;
+            } else {
+                println!("  ~ Updated \"{}\"", task_title);
+                total_changes += 1;
+            }
+        }
+    }
+
+    // Persist.
+    if total_changes > 0 {
+        if let Some(s) = &storage {
+            if let Err(err) = s.save_tasks(&tasks) {
+                eprintln!("Save failed: {err}");
+            } else {
+                saved = true;
+            }
+        }
+    }
+
+    eprintln!();
+    if total_changes == 0 {
+        eprintln!("No changes.");
+    } else {
+        eprintln!(
+            "Done. {} change{} applied{}.",
+            total_changes,
+            if total_changes == 1 { "" } else { "s" },
+            if saved { " and saved" } else { "" }
+        );
+    }
+
+    Ok(())
+}
+
 fn print_help() {
-    println!("aipm - AI task manager (TUI)");
+    println!("aipm - AI-powered project manager");
     println!();
     println!("Usage:");
-    println!("  aipm");
+    println!("  aipm                            Open the interactive TUI");
+    println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
     println!("  aipm --help");
     println!("  aipm --version");
+    println!();
+    println!("CLI examples:");
+    println!("  aipm \"break down all tickets into sub-issues\"");
+    println!("  aipm \"mark the onboarding task as done\"");
+    println!("  aipm \"create a task to set up CI/CD pipeline\"");
     println!();
     println!("New task input (tab 1):");
     println!("  <text>                  (AI routes into Team/John/Admin)");

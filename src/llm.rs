@@ -167,6 +167,11 @@ impl AiRuntime {
         }
         out
     }
+
+    /// Blocking receive for CLI mode. Returns None on timeout.
+    pub fn recv_blocking(&self, timeout: Duration) -> Option<AiResult> {
+        self.result_rx.recv_timeout(timeout).ok()
+    }
 }
 
 fn worker_loop(cfg: OpenAiConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResult>) {
