@@ -192,6 +192,7 @@ struct App {
     scroll_admin: usize,
 
     input: String,
+    input_cursor: usize,
     status: Option<(String, Instant, bool)>,
 
     edit_task_id: Option<Uuid>,
@@ -287,6 +288,7 @@ fn main() -> io::Result<()> {
         scroll_john: 0,
         scroll_admin: 0,
         input: String::new(),
+        input_cursor: 0,
         status: None,
         edit_task_id: None,
         edit_field: EditField::Title,
@@ -569,6 +571,77 @@ fn handle_default_tab_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 }
 
+/// Convert a char-based index into the byte offset within `s`.
+fn char_byte_pos(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
+}
+
+/// Return the visible slice of `input` that keeps `cursor_char` on-screen,
+/// plus the visual x-offset of the cursor within that slice.
+fn input_visible_window(input: &str, cursor_char: usize, max_width: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+
+    let chars: Vec<char> = input.chars().collect();
+    let cursor_char = cursor_char.min(chars.len());
+
+    let width_before: usize = chars[..cursor_char]
+        .iter()
+        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum();
+
+    if input.width() <= max_width {
+        return (input.to_string(), width_before);
+    }
+
+    if width_before < max_width {
+        // Cursor visible when showing from start.
+        let mut out = String::new();
+        let mut w = 0;
+        for &ch in &chars {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if w + cw > max_width {
+                break;
+            }
+            out.push(ch);
+            w += cw;
+        }
+        return (out, width_before);
+    }
+
+    // Scroll so cursor is near the right edge.
+    let mut start = cursor_char;
+    let mut vis_w = 0;
+    while start > 0 {
+        let cw = UnicodeWidthChar::width(chars[start - 1]).unwrap_or(0);
+        if vis_w + cw > max_width {
+            break;
+        }
+        start -= 1;
+        vis_w += cw;
+    }
+
+    let mut out = String::new();
+    let mut w = 0;
+    for &ch in &chars[start..] {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max_width {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+
+    let cursor_offset: usize = chars[start..cursor_char]
+        .iter()
+        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum();
+
+    (out, cursor_offset)
+}
+
 fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
         KeyCode::Esc => {
@@ -578,6 +651,18 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Tab => {
             app.focus = Focus::Board;
+            Ok(false)
+        }
+        KeyCode::Left => {
+            if app.input_cursor > 0 {
+                app.input_cursor -= 1;
+            }
+            Ok(false)
+        }
+        KeyCode::Right => {
+            if app.input_cursor < app.input.chars().count() {
+                app.input_cursor += 1;
+            }
             Ok(false)
         }
         KeyCode::Enter => {
@@ -673,6 +758,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
                 app.input.clear();
+                app.input_cursor = 0;
                 return Ok(false);
             }
 
@@ -681,6 +767,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 return Ok(false);
             }
             app.input.clear();
+            app.input_cursor = 0;
 
             // AI triage: let the AI decide create vs update.
             if let Some(ai) = &app.ai {
@@ -731,36 +818,81 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Backspace => {
             if key.modifiers.contains(KeyModifiers::ALT) {
-                // Option+Backspace: delete last word.
-                let trimmed = app.input.trim_end().len();
-                app.input.truncate(trimmed);
-                while !app.input.is_empty() && !app.input.ends_with(' ') {
-                    app.input.pop();
+                // Option+Backspace: delete word before cursor.
+                while app.input_cursor > 0 {
+                    let bp = char_byte_pos(&app.input, app.input_cursor - 1);
+                    if app.input[bp..].chars().next().unwrap() != ' ' {
+                        break;
+                    }
+                    app.input.remove(bp);
+                    app.input_cursor -= 1;
                 }
-            } else {
-                app.input.pop();
+                while app.input_cursor > 0 {
+                    let bp = char_byte_pos(&app.input, app.input_cursor - 1);
+                    if app.input[bp..].chars().next().unwrap() == ' ' {
+                        break;
+                    }
+                    app.input.remove(bp);
+                    app.input_cursor -= 1;
+                }
+            } else if app.input_cursor > 0 {
+                let bp = char_byte_pos(&app.input, app.input_cursor - 1);
+                app.input.remove(bp);
+                app.input_cursor -= 1;
             }
+            Ok(false)
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+A: move cursor to start.
+            app.input_cursor = 0;
+            Ok(false)
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+E: move cursor to end.
+            app.input_cursor = app.input.chars().count();
             Ok(false)
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Ctrl+U: clear entire input.
             app.input.clear();
+            app.input_cursor = 0;
             Ok(false)
         }
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Ctrl+W: delete last word.
-            let trimmed = app.input.trim_end().len();
-            app.input.truncate(trimmed);
-            while !app.input.is_empty() && !app.input.ends_with(' ') {
-                app.input.pop();
+            // Ctrl+W: delete word before cursor.
+            while app.input_cursor > 0 {
+                let bp = char_byte_pos(&app.input, app.input_cursor - 1);
+                if app.input[bp..].chars().next().unwrap() != ' ' {
+                    break;
+                }
+                app.input.remove(bp);
+                app.input_cursor -= 1;
             }
+            while app.input_cursor > 0 {
+                let bp = char_byte_pos(&app.input, app.input_cursor - 1);
+                if app.input[bp..].chars().next().unwrap() == ' ' {
+                    break;
+                }
+                app.input.remove(bp);
+                app.input_cursor -= 1;
+            }
+            Ok(false)
+        }
+        KeyCode::Home => {
+            app.input_cursor = 0;
+            Ok(false)
+        }
+        KeyCode::End => {
+            app.input_cursor = app.input.chars().count();
             Ok(false)
         }
         KeyCode::Char(ch) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 return Ok(false);
             }
-            app.input.push(ch);
+            let bp = char_byte_pos(&app.input, app.input_cursor);
+            app.input.insert(bp, ch);
+            app.input_cursor += 1;
             Ok(false)
         }
         _ => Ok(false),
@@ -2511,10 +2643,10 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     let max_input = width
         .saturating_sub(x_margin * 2)
         .saturating_sub(prompt.width());
-    let shown = if app.input.is_empty() {
-        String::new()
+    let (shown, cursor_vis_offset) = if app.input.is_empty() {
+        (String::new(), 0)
     } else {
-        clamp_text(&app.input, max_input)
+        input_visible_window(&app.input, app.input_cursor, max_input)
     };
 
     queue!(stdout, MoveTo(x_input, y_input))?;
@@ -2566,7 +2698,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 
     // Cursor
     if app.focus == Focus::Input {
-        let cursor_x = x_input as usize + prompt.width() + shown.width();
+        let cursor_x = x_input as usize + prompt.width() + cursor_vis_offset;
         queue!(
             stdout,
             MoveTo((cursor_x as u16).min(cols.saturating_sub(1)), y_input),
