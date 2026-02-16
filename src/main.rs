@@ -1525,9 +1525,9 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 }
                 _ => {}
             }
-            app.settings_editing = false;
             persist_settings(app);
             rebuild_ai(app);
+            // Stay in edit mode — user presses Esc to leave.
         }
         KeyCode::Backspace => {
             app.settings_buf.pop();
