@@ -4858,5 +4858,6 @@ fn print_help() {
     println!("  AIPM_API_URL=...                  (auto-detected from model)");
     println!();
     println!("Data:");
-    println!("  Stored at $AIPM_DATA_DIR/tasks.json if set, otherwise in your OS data dir.");
+    println!("  Stored as individual markdown files in $AIPM_DATA_DIR/tasks/ if set,");
+    println!("  otherwise in your OS data dir. Each task is a .md file with YAML front matter.");
 }
