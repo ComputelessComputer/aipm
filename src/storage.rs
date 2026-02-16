@@ -8,7 +8,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::model::{Bucket, Priority, Progress, Task};
+use crate::model::{BucketDef, Priority, Progress, Task};
 
 // ---------------------------------------------------------------------------
 // AiSettings
@@ -37,6 +37,8 @@ pub struct AiSettings {
     pub show_in_progress: bool,
     #[serde(default)]
     pub show_done: bool,
+    #[serde(default = "default_buckets")]
+    pub buckets: Vec<BucketDef>,
 }
 
 fn default_owner_name() -> String {
@@ -45,6 +47,23 @@ fn default_owner_name() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_buckets() -> Vec<BucketDef> {
+    vec![
+        BucketDef {
+            name: "Team".to_string(),
+            description: Some("Onboarding, coordination, guiding your crew".to_string()),
+        },
+        BucketDef {
+            name: "John-only".to_string(),
+            description: Some("Marketing strategy, public content, key direction".to_string()),
+        },
+        BucketDef {
+            name: "Admin".to_string(),
+            description: Some("Taxes, accounting, admin chores".to_string()),
+        },
+    ]
 }
 
 impl Default for AiSettings {
@@ -62,6 +81,7 @@ impl Default for AiSettings {
             show_todo: true,
             show_in_progress: true,
             show_done: false,
+            buckets: default_buckets(),
         }
     }
 }
@@ -352,14 +372,6 @@ fn task_filename(task: &Task) -> String {
 // Serialization
 // ---------------------------------------------------------------------------
 
-fn bucket_to_str(b: Bucket) -> &'static str {
-    match b {
-        Bucket::Team => "Team",
-        Bucket::John => "John",
-        Bucket::Admin => "Admin",
-    }
-}
-
 fn progress_to_str(p: Progress) -> &'static str {
     match p {
         Progress::Backlog => "Backlog",
@@ -382,7 +394,7 @@ fn serialize_task_file(task: &Task) -> String {
     let fm = TaskFrontMatter {
         id: task.id.to_string(),
         title: task.title.clone(),
-        bucket: bucket_to_str(task.bucket).to_string(),
+        bucket: task.bucket.clone(),
         progress: progress_to_str(task.progress).to_string(),
         priority: priority_to_str(task.priority).to_string(),
         due_date: task.due_date.map(|d| d.format("%Y-%m-%d").to_string()),
@@ -434,12 +446,7 @@ fn parse_task_file(content: &str) -> Result<Task, String> {
     let id = Uuid::parse_str(&fm.id)
         .map_err(|err| format!("invalid id: {err}"))?;
 
-    let bucket = match fm.bucket.to_ascii_lowercase().as_str() {
-        "team" => Bucket::Team,
-        "john" | "john-only" => Bucket::John,
-        "admin" => Bucket::Admin,
-        other => return Err(format!("unknown bucket: {other}")),
-    };
+    let bucket = fm.bucket.clone();
 
     let progress = match fm.progress.to_ascii_lowercase().as_str() {
         "backlog" => Progress::Backlog,

@@ -19,7 +19,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{children_of, Bucket, Progress, Task};
+use crate::model::{children_of, Progress, Task};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,19 +162,16 @@ impl SettingsField {
     }
 }
 
-fn bucket_display_title(bucket: Bucket, owner_name: &str) -> String {
-    match bucket {
-        Bucket::Team => "Team".to_string(),
-        Bucket::John => {
-            let name = if owner_name.trim().is_empty() {
-                "John"
-            } else {
-                owner_name.trim()
-            };
-            format!("{}-only", name)
-        }
-        Bucket::Admin => "Admin".to_string(),
-    }
+fn default_bucket_name(settings: &AiSettings) -> String {
+    settings
+        .buckets
+        .first()
+        .map(|b| b.name.clone())
+        .unwrap_or_else(|| "Unassigned".to_string())
+}
+
+fn bucket_names(settings: &AiSettings) -> Vec<String> {
+    settings.buckets.iter().map(|b| b.name.clone()).collect()
 }
 
 struct App {
@@ -184,12 +181,10 @@ struct App {
     tab: Tab,
     focus: Focus,
 
-    selected_bucket: Bucket,
+    selected_bucket: usize,
     selected_task_id: Option<Uuid>,
 
-    scroll_team: usize,
-    scroll_john: usize,
-    scroll_admin: usize,
+    bucket_scrolls: Vec<usize>,
 
     input: String,
     input_cursor: usize,
@@ -276,17 +271,16 @@ fn main() -> io::Result<()> {
         None => AiSettings::default(),
     };
 
+    let bucket_count = settings.buckets.len();
     let mut app = App {
         storage,
         tasks,
         ai: llm::AiRuntime::from_settings(&settings),
         tab: Tab::Default,
         focus: Focus::Input,
-        selected_bucket: Bucket::Team,
+        selected_bucket: 0,
         selected_task_id: None,
-        scroll_team: 0,
-        scroll_john: 0,
-        scroll_admin: 0,
+        bucket_scrolls: vec![0; bucket_count],
         input: String::new(),
         input_cursor: 0,
         status: None,
@@ -718,8 +712,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                 ai.enqueue(llm::AiJob {
                                     task_id: Uuid::nil(),
                                     title: String::new(),
-                                    suggested_bucket: Bucket::Team,
+                                    suggested_bucket: default_bucket_name(&app.settings),
                                     context,
+                                    bucket_names: bucket_names(&app.settings),
                                     lock_bucket: false,
                                     lock_priority: false,
                                     lock_due_date: false,
@@ -743,8 +738,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                     ai.enqueue(llm::AiJob {
                                         task_id,
                                         title: task.title.clone(),
-                                        suggested_bucket: task.bucket,
+                                        suggested_bucket: task.bucket.clone(),
                                         context,
+                                        bucket_names: bucket_names(&app.settings),
                                         lock_bucket: false,
                                         lock_priority: false,
                                         lock_due_date: false,
@@ -793,8 +789,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 ai.enqueue(llm::AiJob {
                     task_id: Uuid::nil(),
                     title: String::new(),
-                    suggested_bucket: Bucket::Team,
+                    suggested_bucket: default_bucket_name(&app.settings),
                     context,
+                    bucket_names: bucket_names(&app.settings),
                     lock_bucket: false,
                     lock_priority: false,
                     lock_due_date: false,
@@ -807,10 +804,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.status = Some(("AI thinking…".to_string(), Instant::now(), true));
             } else {
                 // Fallback: local inference when AI is not configured.
-                let maybe = ai::infer_new_task(&raw_input);
+                let bnames = bucket_names(&app.settings);
+                let maybe = ai::infer_new_task(&raw_input, &bnames);
                 if let Some(hints) = maybe {
                     let now = Utc::now();
-                    let mut task = Task::new(hints.bucket, hints.title, now);
+                    let mut task = Task::new(hints.bucket.clone(), hints.title, now);
                     if let Some(p) = hints.priority {
                         task.priority = p;
                     }
@@ -819,10 +817,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                     app.tasks.push(task);
                     app.status = Some((
-                        format!(
-                            "Created in {}",
-                            bucket_display_title(hints.bucket, &app.settings.owner_name)
-                        ),
+                        format!("Created in {}", hints.bucket),
                         Instant::now(),
                         false,
                     ));
@@ -964,24 +959,23 @@ fn handle_board_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
     match key.code {
         KeyCode::Left | KeyCode::Char('h') => {
-            app.selected_bucket = match app.selected_bucket {
-                Bucket::Team => Bucket::Admin,
-                Bucket::John => Bucket::Team,
-                Bucket::Admin => Bucket::John,
-            };
+            let n = app.settings.buckets.len();
+            if n > 0 {
+                app.selected_bucket = (app.selected_bucket + n - 1) % n;
+            }
             ensure_default_selection(app);
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            app.selected_bucket = match app.selected_bucket {
-                Bucket::Team => Bucket::John,
-                Bucket::John => Bucket::Admin,
-                Bucket::Admin => Bucket::Team,
-            };
+            let n = app.settings.buckets.len();
+            if n > 0 {
+                app.selected_bucket = (app.selected_bucket + 1) % n;
+            }
             ensure_default_selection(app);
         }
         KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
         KeyCode::Down | KeyCode::Char('j') => {
-            let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
+            let bname = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+            let bucket_tasks = bucket_task_indices(&app.tasks, bname, &app.settings);
             let at_last = app
                 .selected_task_id
                 .and_then(|id| bucket_tasks.iter().position(|&idx| app.tasks[idx].id == id))
@@ -1112,7 +1106,7 @@ fn load_edit_buf(app: &mut App) {
     app.edit_buf = match app.edit_field {
         EditField::Title => task.title.clone(),
         EditField::Description => task.description.clone(),
-        EditField::Bucket => bucket_display_title(task.bucket, &app.settings.owner_name),
+        EditField::Bucket => task.bucket.clone(),
         EditField::Progress => task.progress.title().to_string(),
         EditField::Priority => task.priority.title().to_string(),
         EditField::DueDate => task
@@ -1145,13 +1139,12 @@ fn commit_edit_buf(app: &mut App) {
             task.updated_at = now;
         }
         EditField::Bucket => {
-            if let Some(b) = match app.edit_buf.trim().to_ascii_lowercase().as_str() {
-                "team" => Some(Bucket::Team),
-                "john" | "john-only" => Some(Bucket::John),
-                "admin" => Some(Bucket::Admin),
-                _ => None,
-            } {
-                task.bucket = b;
+            let input = app.edit_buf.trim();
+            let matched = app.settings.buckets.iter().find(|b| {
+                b.name.eq_ignore_ascii_case(input)
+            });
+            if let Some(b) = matched {
+                task.bucket = b.name.clone();
                 task.updated_at = now;
             }
         }
@@ -1205,20 +1198,17 @@ fn cycle_edit_field_value(app: &mut App, forward: bool) {
 
     match app.edit_field {
         EditField::Bucket => {
-            task.bucket = if forward {
-                match task.bucket {
-                    Bucket::Team => Bucket::John,
-                    Bucket::John => Bucket::Admin,
-                    Bucket::Admin => Bucket::Team,
-                }
-            } else {
-                match task.bucket {
-                    Bucket::Team => Bucket::Admin,
-                    Bucket::John => Bucket::Team,
-                    Bucket::Admin => Bucket::John,
-                }
-            };
-            task.updated_at = now;
+            let names: Vec<String> = bucket_names(&app.settings);
+            if !names.is_empty() {
+                let cur = names.iter().position(|n| *n == task.bucket).unwrap_or(0);
+                let next = if forward {
+                    (cur + 1) % names.len()
+                } else {
+                    (cur + names.len() - 1) % names.len()
+                };
+                task.bucket = names[next].clone();
+                task.updated_at = now;
+            }
         }
         EditField::Progress => {
             let next = if forward {
@@ -1399,8 +1389,8 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                         .tasks
                         .iter()
                         .find(|t| t.id == parent_id)
-                        .map(|t| t.bucket)
-                        .unwrap_or(Bucket::Team);
+                        .map(|t| t.bucket.clone())
+                        .unwrap_or_else(|| default_bucket_name(&app.settings));
                     let now = Utc::now();
                     let mut child = Task::new(parent_bucket, "New sub-issue".to_string(), now);
                     child.parent_id = Some(parent_id);
@@ -1801,8 +1791,8 @@ fn poll_ai(app: &mut App) -> bool {
                         .as_deref()
                         .unwrap_or("Untitled")
                         .to_string();
-                    let bucket = result.update.bucket.unwrap_or(Bucket::Team);
-                    let mut task = Task::new(bucket, title, now);
+                    let bucket = result.update.bucket.clone().unwrap_or_else(|| default_bucket_name(&app.settings));
+                    let mut task = Task::new(bucket.clone(), title, now);
                     if let Some(desc) = &result.update.description {
                         task.description = desc.clone();
                     }
@@ -1829,7 +1819,7 @@ fn poll_ai(app: &mut App) -> bool {
                         let count = result.sub_task_specs.len();
                         let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                         for spec in result.sub_task_specs.iter() {
-                            let sub_bucket = spec.bucket.unwrap_or(bucket);
+                            let sub_bucket = spec.bucket.clone().unwrap_or_else(|| bucket.clone());
                             let mut sub = Task::new(sub_bucket, spec.title.clone(), now);
                             sub.parent_id = Some(parent_id);
                             sub.description = spec.description.clone();
@@ -1906,12 +1896,12 @@ fn poll_ai(app: &mut App) -> bool {
                                 .tasks
                                 .iter()
                                 .find(|t| t.id == id)
-                                .map(|t| t.bucket)
-                                .unwrap_or(Bucket::Team);
+                                .map(|t| t.bucket.clone())
+                                .unwrap_or_else(|| default_bucket_name(&app.settings));
                             let count = result.sub_task_specs.len();
                             let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                             for spec in result.sub_task_specs.iter() {
-                                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                                let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                                 let mut task = Task::new(bucket, spec.title.clone(), now);
                                 task.parent_id = Some(id);
                                 task.description = spec.description.clone();
@@ -2015,9 +2005,9 @@ fn poll_ai(app: &mut App) -> bool {
                     // First pass: create all tasks and collect their Uuids.
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                     let default_bucket =
-                        specs.first().and_then(|s| s.bucket).unwrap_or(Bucket::Team);
+                        specs.first().and_then(|s| s.bucket.clone()).unwrap_or_else(|| default_bucket_name(&app.settings));
                     for spec in specs.iter() {
-                        let bucket = spec.bucket.unwrap_or(default_bucket);
+                        let bucket = spec.bucket.clone().unwrap_or_else(|| default_bucket.clone());
                         let mut task = Task::new(bucket, spec.title.clone(), now);
                         task.parent_id = parent_id;
                         task.description = spec.description.clone();
@@ -2099,8 +2089,9 @@ fn poll_ai(app: &mut App) -> bool {
                                 ai.enqueue(llm::AiJob {
                                     task_id: tid,
                                     title: task.title.clone(),
-                                    suggested_bucket: task.bucket,
+                                    suggested_bucket: task.bucket.clone(),
                                     context: context.clone(),
+                                    bucket_names: bucket_names(&app.settings),
                                     lock_bucket: false,
                                     lock_priority: false,
                                     lock_due_date: false,
@@ -2108,7 +2099,7 @@ fn poll_ai(app: &mut App) -> bool {
                                     task_snapshot: Some(snapshot),
                                     triage_input: None,
                                     triage_context: None,
-                    chat_history: Vec::new(),
+                                    chat_history: Vec::new(),
                                 });
                             }
                         }
@@ -2170,13 +2161,13 @@ fn poll_ai(app: &mut App) -> bool {
                 .tasks
                 .iter()
                 .find(|t| t.id == parent_id)
-                .map(|t| t.bucket)
-                .unwrap_or(Bucket::Team);
+                .map(|t| t.bucket.clone())
+                .unwrap_or_else(|| default_bucket_name(&app.settings));
             let count = result.sub_task_specs.len();
             let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
 
             for spec in result.sub_task_specs.iter() {
-                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                 let mut task = Task::new(bucket, spec.title.clone(), now);
                 task.parent_id = Some(parent_id);
                 task.description = spec.description.clone();
@@ -2249,9 +2240,9 @@ fn apply_update(
         }
     }
 
-    if let Some(bucket) = update.bucket {
-        if task.bucket != bucket {
-            task.bucket = bucket;
+    if let Some(bucket) = &update.bucket {
+        if task.bucket != *bucket {
+            task.bucket = bucket.clone();
             task_changed = true;
         }
     }
@@ -2304,7 +2295,7 @@ fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
         .take(40)
         .map(|t| llm::ContextTask {
             id: t.id,
-            bucket: t.bucket,
+            bucket: t.bucket.clone(),
             title: t.title.clone(),
         })
         .collect()
@@ -2326,7 +2317,7 @@ fn build_triage_context(tasks: &[Task]) -> String {
         out.push_str(&format!(
             "- {} [{}] {} | {} | {} | {}\n",
             short,
-            t.bucket.title(),
+            t.bucket,
             t.title,
             t.progress.title(),
             t.priority.title(),
@@ -2357,7 +2348,7 @@ fn format_task_snapshot(task: &Task) -> String {
     format!(
         "Title: {}\nBucket: {}\nDescription: {}\nProgress: {}\nPriority: {}\nDue: {}\nDependencies: {}",
         task.title,
-        task.bucket.title(),
+        task.bucket,
         if task.description.trim().is_empty() { "none" } else { task.description.trim() },
         task.progress.title(),
         task.priority.title(),
@@ -2400,7 +2391,7 @@ fn annotate_mention(tasks: &[Task], target_id: Option<Uuid>, instruction: &str) 
                 "[target task: {} \"{}\" in {}] {}",
                 short,
                 task.title,
-                task.bucket.title(),
+                task.bucket,
                 instruction
             );
         }
@@ -2438,7 +2429,8 @@ fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String
 }
 
 fn ensure_default_selection(app: &mut App) {
-    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
+    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+    let bucket_tasks = bucket_task_indices(&app.tasks, bucket_name, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
         return;
@@ -2459,7 +2451,8 @@ fn ensure_default_selection(app: &mut App) {
 }
 
 fn move_selection(app: &mut App, delta: i32) {
-    let bucket_tasks = bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings);
+    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
+    let bucket_tasks = bucket_task_indices(&app.tasks, bucket_name, &app.settings);
     if bucket_tasks.is_empty() {
         app.selected_task_id = None;
         return;
@@ -2498,20 +2491,20 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
     let visible = visible_cards(cards_area_height);
     let visible = visible.max(1);
 
+    let bucket_name = app.settings.buckets.get(app.selected_bucket).map(|b| b.name.as_str()).unwrap_or("");
     let selected_index = app
         .selected_task_id
         .and_then(|id| {
-        bucket_task_indices(&app.tasks, app.selected_bucket, &app.settings)
+            bucket_task_indices(&app.tasks, bucket_name, &app.settings)
                 .iter()
                 .position(|&idx| app.tasks[idx].id == id)
         })
         .unwrap_or(0);
 
-    let scroll = match app.selected_bucket {
-        Bucket::Team => &mut app.scroll_team,
-        Bucket::John => &mut app.scroll_john,
-        Bucket::Admin => &mut app.scroll_admin,
-    };
+    if app.selected_bucket >= app.bucket_scrolls.len() {
+        return;
+    }
+    let scroll = &mut app.bucket_scrolls[app.selected_bucket];
 
     if total <= visible {
         *scroll = 0;
@@ -2528,12 +2521,12 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
     *scroll = (*scroll).min(max_scroll);
 }
 
-fn bucket_task_indices(tasks: &[Task], bucket: Bucket, settings: &AiSettings) -> Vec<usize> {
+fn bucket_task_indices(tasks: &[Task], bucket_name: &str, settings: &AiSettings) -> Vec<usize> {
     let mut indices: Vec<usize> = tasks
         .iter()
         .enumerate()
         .filter_map(|(idx, t)| {
-            if t.bucket == bucket
+            if t.bucket == bucket_name
                 && t.parent_id.is_none()
                 && settings.is_progress_visible(t.progress)
             {
@@ -2607,7 +2600,8 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
 
 fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     let width = cols as usize;
-    let (x_margin, _) = choose_layout(width, 3);
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
     let mut x: u16 = x_margin as u16;
     let tabs_focused = app.focus == Focus::Tabs;
     for (tab, label) in [
@@ -2655,7 +2649,8 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
 
 fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
-    let (x_margin, gap) = choose_layout(width, 3);
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, gap) = choose_layout(width, num_buckets);
 
     // Top padding below the tabs row.
     let y_body_top = 3u16;
@@ -2668,21 +2663,20 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     let x_input = x_margin as u16;
 
     let content_width = width.saturating_sub(x_margin * 2);
-    let col_width = content_width.saturating_sub(gap * 2) / 3;
+    let col_width = if num_buckets > 1 {
+        content_width.saturating_sub(gap * (num_buckets - 1)) / num_buckets
+    } else {
+        content_width
+    };
 
-    let col_x = [
-        x_margin,
-        x_margin + col_width + gap,
-        x_margin + 2 * (col_width + gap),
-    ];
+    let col_x: Vec<usize> = (0..num_buckets)
+        .map(|i| x_margin + i * (col_width + gap))
+        .collect();
 
-    for (i, bucket) in Bucket::ALL.iter().enumerate() {
+    for (i, bucket_def) in app.settings.buckets.iter().enumerate() {
         let x = col_x[i] as u16;
 
-        let title = format!(
-            " {}",
-            bucket_display_title(*bucket, &app.settings.owner_name)
-        );
+        let title = format!(" {}", bucket_def.name);
         queue!(
             stdout,
             MoveTo(x, y_body_top),
@@ -2691,7 +2685,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
             SetAttribute(Attribute::Reset)
         )?;
 
-        let desc = format!(" {}", bucket.description());
+        let desc = format!(" {}", bucket_def.description.as_deref().unwrap_or(""));
         queue!(
             stdout,
             MoveTo(x, y_body_top + 1),
@@ -2703,11 +2697,11 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 
     let y_cards_start = y_body_top + 3;
 
-    for (i, bucket) in Bucket::ALL.iter().enumerate() {
+    for i in 0..app.settings.buckets.len() {
         render_bucket_column(
             stdout,
             app,
-            *bucket,
+            i,
             col_x[i] as u16,
             y_cards_start,
             col_width,
@@ -2801,7 +2795,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 fn render_bucket_column(
     stdout: &mut Stdout,
     app: &App,
-    bucket: Bucket,
+    bucket_idx: usize,
     x: u16,
     y: u16,
     width: usize,
@@ -2809,12 +2803,9 @@ fn render_bucket_column(
 ) -> io::Result<()> {
     const CARD_LINES: usize = 6; // lines 0-5 (title, desc×2, separator, progress, due)
 
-    let indices = bucket_task_indices(&app.tasks, bucket, &app.settings);
-    let scroll = match bucket {
-        Bucket::Team => app.scroll_team,
-        Bucket::John => app.scroll_john,
-        Bucket::Admin => app.scroll_admin,
-    };
+    let bucket_name = &app.settings.buckets[bucket_idx].name;
+    let indices = bucket_task_indices(&app.tasks, bucket_name, &app.settings);
+    let scroll = app.bucket_scrolls.get(bucket_idx).copied().unwrap_or(0);
 
     let inner_w = width.saturating_sub(2); // 1 char padding each side
     let mut y_cursor = y;
@@ -2826,7 +2817,7 @@ fn render_bucket_column(
 
         let task = &app.tasks[idx];
         let is_selected = app.focus == Focus::Board
-            && bucket == app.selected_bucket
+            && bucket_idx == app.selected_bucket
             && app.selected_task_id == Some(task.id);
 
         let card_top = y_cursor;
@@ -3211,14 +3202,12 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         let is_selected = sorted_pos == app.timeline_selected;
 
         // Task label
+        const BUCKET_SYMBOLS: &[&str] = &["●", "◆", "■", "▲", "★", "♦"];
         let prefix = if task.is_child() {
             "↳"
         } else {
-            match task.bucket {
-                Bucket::Team => "●",
-                Bucket::John => "◆",
-                Bucket::Admin => "■",
-            }
+            let bi = app.settings.buckets.iter().position(|b| b.name == task.bucket).unwrap_or(0);
+            BUCKET_SYMBOLS[bi % BUCKET_SYMBOLS.len()]
         };
         let label = format!("{} {}", prefix, task.title);
 
@@ -3517,7 +3506,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io
             } else {
                 format!(
                     " {} · {}",
-                    bucket_display_title(task.bucket, &app.settings.owner_name),
+                    task.bucket,
                     task.title
                 )
             };
@@ -4082,7 +4071,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 
         let value = match field {
             EditField::Title => task.title.clone(),
-            EditField::Bucket => bucket_display_title(task.bucket, &app.settings.owner_name),
+            EditField::Bucket => task.bucket.clone(),
             EditField::Progress => {
                 format!(
                     "{} {}",
@@ -4320,7 +4309,8 @@ fn choose_layout(total_width: usize, columns: usize) -> (usize, usize) {
 
             loop {
                 let content = total_width.saturating_sub(x_margin * 2);
-                let col_width = content.saturating_sub(gap * 2) / 3;
+                let gaps = if columns > 1 { columns - 1 } else { 0 };
+                let col_width = content.saturating_sub(gap * gaps) / columns.max(1);
                 if col_width >= min_col || (x_margin <= 2 && gap <= 2) {
                     return (x_margin, gap);
                 }
@@ -4368,8 +4358,9 @@ fn run_cli(instruction: &str) -> io::Result<()> {
     ai.enqueue(llm::AiJob {
         task_id: Uuid::nil(),
         title: String::new(),
-        suggested_bucket: Bucket::Team,
+        suggested_bucket: default_bucket_name(&settings),
         context,
+        bucket_names: bucket_names(&settings),
         lock_bucket: false,
         lock_priority: false,
         lock_due_date: false,
@@ -4377,7 +4368,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
         task_snapshot: None,
         triage_input: Some(instruction.to_string()),
         triage_context: Some(triage_ctx),
-                    chat_history: Vec::new(),
+        chat_history: Vec::new(),
     });
 
     let mut pending = 1u32;
@@ -4410,8 +4401,8 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         .as_deref()
                         .unwrap_or("Untitled")
                         .to_string();
-                    let bucket = result.update.bucket.unwrap_or(Bucket::Team);
-                    let mut task = Task::new(bucket, title, now);
+                    let bucket = result.update.bucket.clone().unwrap_or_else(|| default_bucket_name(&settings));
+                    let mut task = Task::new(bucket.clone(), title, now);
                     if let Some(desc) = &result.update.description {
                         task.description = desc.clone();
                     }
@@ -4435,7 +4426,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                     println!(
                         "  + Created \"{}\" [{}]",
                         task.title,
-                        bucket_display_title(task.bucket, &settings.owner_name)
+                        task.bucket
                     );
                     tasks.push(task);
                     total_changes += 1;
@@ -4443,7 +4434,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         let count = result.sub_task_specs.len();
                         let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                         for spec in result.sub_task_specs.iter() {
-                            let sub_bucket = spec.bucket.unwrap_or(bucket);
+                            let sub_bucket = spec.bucket.clone().unwrap_or_else(|| bucket.clone());
                             let mut sub = Task::new(sub_bucket, spec.title.clone(), now);
                             sub.parent_id = Some(parent_id);
                             sub.description = spec.description.clone();
@@ -4505,12 +4496,12 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             let parent_bucket = tasks
                                 .iter()
                                 .find(|t| t.id == id)
-                                .map(|t| t.bucket)
-                                .unwrap_or(Bucket::Team);
+                                .map(|t| t.bucket.clone())
+                                .unwrap_or_else(|| default_bucket_name(&settings));
                             let count = result.sub_task_specs.len();
                             let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                             for spec in result.sub_task_specs.iter() {
-                                let bucket = spec.bucket.unwrap_or(parent_bucket);
+                                let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                                 let mut task = Task::new(bucket, spec.title.clone(), now);
                                 task.parent_id = Some(id);
                                 task.description = spec.description.clone();
@@ -4584,11 +4575,11 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         .map(|t| t.title.clone())
                         .unwrap_or_else(|| "(no parent)".to_string());
                     let default_bucket =
-                        specs.first().and_then(|s| s.bucket).unwrap_or(Bucket::Team);
+                        specs.first().and_then(|s| s.bucket.clone()).unwrap_or_else(|| default_bucket_name(&settings));
                     let count = specs.len();
                     let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
                     for spec in specs.iter() {
-                        let bucket = spec.bucket.unwrap_or(default_bucket);
+                        let bucket = spec.bucket.clone().unwrap_or_else(|| default_bucket.clone());
                         let mut task = Task::new(bucket, spec.title.clone(), now);
                         task.parent_id = parent_uuid;
                         task.description = spec.description.clone();
@@ -4678,8 +4669,9 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                                 ai.enqueue(llm::AiJob {
                                     task_id: tid,
                                     title: task.title.clone(),
-                                    suggested_bucket: task.bucket,
+                                    suggested_bucket: task.bucket.clone(),
                                     context: context.clone(),
+                                    bucket_names: bucket_names(&settings),
                                     lock_bucket: false,
                                     lock_priority: false,
                                     lock_due_date: false,
@@ -4687,7 +4679,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                                     task_snapshot: Some(snapshot),
                                     triage_input: None,
                                     triage_context: None,
-                    chat_history: Vec::new(),
+                                    chat_history: Vec::new(),
                                 });
                             }
                         }
@@ -4725,13 +4717,13 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                 let parent_bucket = tasks
                     .iter()
                     .find(|t| t.id == parent_id)
-                    .map(|t| t.bucket)
-                    .unwrap_or(Bucket::Team);
+                    .map(|t| t.bucket.clone())
+                    .unwrap_or_else(|| default_bucket_name(&settings));
                 let count = result.sub_task_specs.len();
                 let mut new_ids: Vec<Uuid> = Vec::with_capacity(count);
 
                 for spec in result.sub_task_specs.iter() {
-                    let bucket = spec.bucket.unwrap_or(parent_bucket);
+                    let bucket = spec.bucket.clone().unwrap_or_else(|| parent_bucket.clone());
                     let mut task = Task::new(bucket, spec.title.clone(), now);
                     task.parent_id = Some(parent_id);
                     task.description = spec.description.clone();
@@ -4832,10 +4824,8 @@ fn print_help() {
     println!("  aipm \"create a task to set up CI/CD pipeline\"");
     println!();
     println!("New task input (tab 1):");
-    println!("  <text>                  (AI routes into Team/John/Admin)");
-    println!("  team: <text>             (force Team bucket)");
-    println!("  john: <text>             (force John-only bucket)");
-    println!("  admin: <text>            (force Admin bucket)");
+    println!("  <text>                  (AI routes into your configured buckets)");
+    println!("  <bucket>: <text>         (force a specific bucket)");
     println!("  due:YYYY-MM-DD           (set due date, e.g. due:2026-02-20)");
     println!("  p:low|medium|high|critical (set priority, e.g. p:high)");
     println!("  @<id> <instruction>      (AI-edit a specific task by ID prefix)");

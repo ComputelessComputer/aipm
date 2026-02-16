@@ -1,28 +1,28 @@
 use chrono::NaiveDate;
 
-use crate::model::{Bucket, Priority};
+use crate::model::Priority;
 
 #[derive(Debug, Clone)]
 pub struct NewTaskHints {
-    pub bucket: Bucket,
+    pub bucket: String,
     pub _bucket_locked: bool,
     pub priority: Option<Priority>,
     pub due_date: Option<NaiveDate>,
     pub title: String,
 }
 
-pub fn infer_new_task(input: &str) -> Option<NewTaskHints> {
+pub fn infer_new_task(input: &str, bucket_names: &[String]) -> Option<NewTaskHints> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
 
     // Allow manual overrides:
-    //   team: ... | john: ... | admin: ...
+    //   bucketname: ...
     // And inline hints:
     //   due:YYYY-MM-DD
     //   p:low|medium|high|critical
-    let (bucket_override, rest) = parse_bucket_prefix(trimmed);
+    let (bucket_override, rest) = parse_bucket_prefix(trimmed, bucket_names);
     let bucket_locked = bucket_override.is_some();
 
     let (due_date, rest) = parse_due_date_hint(rest);
@@ -33,7 +33,7 @@ pub fn infer_new_task(input: &str) -> Option<NewTaskHints> {
         return None;
     }
 
-    let bucket = bucket_override.unwrap_or_else(|| route_bucket(title));
+    let bucket = bucket_override.unwrap_or_else(|| default_bucket(bucket_names));
 
     Some(NewTaskHints {
         bucket,
@@ -44,15 +44,12 @@ pub fn infer_new_task(input: &str) -> Option<NewTaskHints> {
     })
 }
 
-fn parse_bucket_prefix(input: &str) -> (Option<Bucket>, &str) {
+fn parse_bucket_prefix<'a>(input: &'a str, bucket_names: &[String]) -> (Option<String>, &'a str) {
     let lower = input.to_ascii_lowercase();
-    for (prefix, bucket) in [
-        ("team:", Bucket::Team),
-        ("john:", Bucket::John),
-        ("admin:", Bucket::Admin),
-    ] {
-        if lower.starts_with(prefix) {
-            return (Some(bucket), input[prefix.len()..].trim_start());
+    for name in bucket_names {
+        let prefix = format!("{}:", name.to_ascii_lowercase());
+        if lower.starts_with(&prefix) {
+            return (Some(name.clone()), input[prefix.len()..].trim_start());
         }
     }
     (None, input)
@@ -104,80 +101,10 @@ fn parse_priority_hint(input: &str) -> (Option<Priority>, String) {
     (prio, out_tokens.join(" "))
 }
 
-pub fn route_bucket(text: &str) -> Bucket {
-    let lower = text.to_ascii_lowercase();
-
-    // "Necessary evil" admin
-    if contains_any(
-        &lower,
-        &[
-            "tax",
-            "taxes",
-            "accounting",
-            "invoice",
-            "invoicing",
-            "receipt",
-            "bookkeeping",
-            "payroll",
-            "compliance",
-            "insurance",
-            "audit",
-            "bank",
-            "budget",
-            "billing",
-        ],
-    ) {
-        return Bucket::Admin;
-    }
-
-    // John-only
-    if contains_any(
-        &lower,
-        &[
-            "marketing",
-            "brand",
-            "positioning",
-            "strategy",
-            "launch",
-            "content",
-            "blog",
-            "newsletter",
-            "tweet",
-            "x.com",
-            "press",
-            "public",
-            "talk",
-            "keynote",
-            "vision",
-        ],
-    ) {
-        return Bucket::John;
-    }
-
-    // Team / coordination
-    if contains_any(
-        &lower,
-        &[
-            "onboarding",
-            "coordination",
-            "coordinate",
-            "sync",
-            "standup",
-            "meeting",
-            "handoff",
-            "unblock",
-            "guide",
-            "mentoring",
-            "hire",
-            "recruit",
-        ],
-    ) {
-        return Bucket::Team;
-    }
-
-    Bucket::Team
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|n| haystack.contains(n))
+/// Return the first bucket name as the default.
+pub fn default_bucket(bucket_names: &[String]) -> String {
+    bucket_names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Unassigned".to_string())
 }

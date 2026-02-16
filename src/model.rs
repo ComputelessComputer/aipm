@@ -2,31 +2,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Bucket {
-    Team,
-    John,
-    Admin,
-}
-
-impl Bucket {
-    pub const ALL: [Bucket; 3] = [Bucket::Team, Bucket::John, Bucket::Admin];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Bucket::Team => "Team",
-            Bucket::John => "John-only",
-            Bucket::Admin => "Admin",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Bucket::Team => "Onboarding, coordination, guiding your crew",
-            Bucket::John => "Marketing strategy, public content, key direction",
-            Bucket::Admin => "Taxes, accounting, admin chores",
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -105,7 +85,7 @@ impl Priority {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: Uuid,
-    pub bucket: Bucket,
+    pub bucket: String,
     pub title: String,
     pub description: String,
     pub dependencies: Vec<Uuid>,
@@ -120,7 +100,7 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(bucket: Bucket, title: String, now: DateTime<Utc>) -> Task {
+    pub fn new(bucket: String, title: String, now: DateTime<Utc>) -> Task {
         Task {
             id: Uuid::new_v4(),
             bucket,

@@ -9,13 +9,13 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::model::{Bucket, Priority, Progress};
+use crate::model::{Priority, Progress};
 use crate::storage::AiSettings;
 
 #[derive(Debug, Clone)]
 pub struct ContextTask {
     pub id: Uuid,
-    pub bucket: Bucket,
+    pub bucket: String,
     pub title: String,
 }
 
@@ -30,8 +30,9 @@ pub struct ChatEntry {
 pub struct AiJob {
     pub task_id: Uuid,
     pub title: String,
-    pub suggested_bucket: Bucket,
+    pub suggested_bucket: String,
     pub context: Vec<ContextTask>,
+    pub bucket_names: Vec<String>,
     pub lock_bucket: bool,
     pub lock_priority: bool,
     pub lock_due_date: bool,
@@ -51,7 +52,7 @@ pub struct AiJob {
 pub struct TaskUpdate {
     pub is_edit: bool,
     pub title: Option<String>,
-    pub bucket: Option<Bucket>,
+    pub bucket: Option<String>,
     pub description: Option<String>,
     pub progress: Option<Progress>,
     pub priority: Option<Priority>,
@@ -83,7 +84,7 @@ pub enum TriageAction {
 pub struct SubTaskSpec {
     pub title: String,
     pub description: String,
-    pub bucket: Option<Bucket>,
+    pub bucket: Option<String>,
     pub priority: Option<Priority>,
     pub progress: Option<Progress>,
     pub due_date: Option<NaiveDate>,
@@ -635,7 +636,7 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
         context_lines.push_str(&format!(
             "- {} [{}] {}\n",
             short_id(task.id),
-            task.bucket.title(),
+            task.bucket,
             task.title
         ));
     }
@@ -645,10 +646,12 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
         job.lock_bucket, job.lock_priority, job.lock_due_date
     );
 
+    let bucket_enum = job.bucket_names.iter().map(|n| format!("\"{}\"" , n)).collect::<Vec<_>>().join("|");
+
     let user = format!(
-        "New task title: {}\nSuggested bucket: {}\n{}\n\nExisting tasks you may depend on (id_prefix [bucket] title):\n{}\nReturn JSON with keys:\n{{\n  \"bucket\": \"Team\"|\"John\"|\"Admin\",\n  \"description\": string,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...]\n}}\nRules:\n- If a field is locked, keep it aligned with the suggested value (bucket) or output null/Medium (due/priority) as appropriate.\n- If unsure, keep bucket as suggested.\n- Dependencies must use the provided id_prefix values.\n",
+        "New task title: {}\nSuggested bucket: {}\n{}\n\nExisting tasks you may depend on (id_prefix [bucket] title):\n{}\nReturn JSON with keys:\n{{\n  \"bucket\": {bucket_enum},\n  \"description\": string,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...]\n}}\nRules:\n- If a field is locked, keep it aligned with the suggested value (bucket) or output null/Medium (due/priority) as appropriate.\n- If unsure, keep bucket as suggested.\n- Dependencies must use the provided id_prefix values.\n",
         job.title.trim(),
-        job.suggested_bucket.title(),
+        &job.suggested_bucket,
         lock_line,
         context_lines
     );
@@ -693,7 +696,7 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
     let mut update = TaskUpdate::default();
 
     if !job.lock_bucket {
-        if let Some(bucket) = enriched.bucket.as_deref().and_then(parse_bucket) {
+        if let Some(bucket) = enriched.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)) {
             update.bucket = Some(bucket);
         }
     }
@@ -812,13 +815,12 @@ fn extract_json_object(text: &str) -> Option<String> {
     Some(text[start..=end].to_string())
 }
 
-fn parse_bucket(input: &str) -> Option<Bucket> {
-    match input.to_ascii_lowercase().as_str() {
-        "team" => Some(Bucket::Team),
-        "john" | "john-only" | "john_only" | "johnonly" => Some(Bucket::John),
-        "admin" => Some(Bucket::Admin),
-        _ => None,
-    }
+fn parse_bucket(input: &str, valid_names: &[String]) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    valid_names
+        .iter()
+        .find(|n| n.to_ascii_lowercase() == lower)
+        .cloned()
 }
 
 fn parse_priority(input: &str) -> Option<Priority> {
@@ -845,13 +847,15 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         context_lines.push_str(&format!(
             "- {} [{}] {}\n",
             short_id(task.id),
-            task.bucket.title(),
+            task.bucket,
             task.title
         ));
     }
 
+    let bucket_enum = job.bucket_names.iter().map(|n| format!("\"{}\"" , n)).collect::<Vec<_>>().join("|");
+
     let user = format!(
-        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": \"Team\"|\"John\"|\"Admin\", \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- Only include fields that should change. Set unchanged fields to null.\n",
+        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- Only include fields that should change. Set unchanged fields to null.\n",
         snapshot,
         instruction,
         context_lines
@@ -906,7 +910,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         .filter(|s| !s.is_empty())
         .map(|s| truncate(s, 200).to_string());
 
-    if let Some(bucket) = enriched.bucket.as_deref().and_then(parse_bucket) {
+    if let Some(bucket) = enriched.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)) {
         update.bucket = Some(bucket);
     }
 
@@ -974,7 +978,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
                     .as_deref()
                     .map(|s| truncate(s.trim(), 400).to_string())
                     .unwrap_or_default(),
-                bucket: st.bucket.as_deref().and_then(parse_bucket),
+                bucket: st.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)),
                 priority: st
                     .priority
                     .as_deref()
@@ -1074,13 +1078,14 @@ struct SubTaskEnriched {
 // Tool schema definitions for triage
 // ---------------------------------------------------------------------------
 
-fn subtask_schema() -> serde_json::Value {
+fn subtask_schema(bucket_names: &[String]) -> serde_json::Value {
+    let bucket_values: Vec<serde_json::Value> = bucket_names.iter().map(|n| json!(n)).collect();
     json!({
         "type": "object",
         "properties": {
             "title": {"type": "string", "description": "Short, actionable subtask title"},
             "description": {"type": "string", "description": "Brief description"},
-            "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+            "bucket": {"type": "string", "enum": bucket_values},
             "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
             "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
             "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
@@ -1117,8 +1122,9 @@ fn make_tool_def(
     }
 }
 
-fn triage_tool_defs(provider: Provider) -> serde_json::Value {
-    let st = subtask_schema();
+fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::Value {
+    let st = subtask_schema(bucket_names);
+    let bucket_values: Vec<serde_json::Value> = bucket_names.iter().map(|n| json!(n)).collect();
     json!([
         make_tool_def(
             provider,
@@ -1128,7 +1134,7 @@ fn triage_tool_defs(provider: Provider) -> serde_json::Value {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Short, actionable title"},
-                    "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+                    "bucket": {"type": "string", "enum": bucket_values.clone()},
                     "description": {"type": "string", "description": "Brief task description"},
                     "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
                     "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
@@ -1156,7 +1162,7 @@ fn triage_tool_defs(provider: Provider) -> serde_json::Value {
                 "properties": {
                     "target_id": {"type": "string", "description": "id_prefix of the task to update"},
                     "title": {"type": "string", "description": "New title"},
-                    "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+                    "bucket": {"type": "string", "enum": bucket_values},
                     "description": {"type": "string"},
                     "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
                     "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
@@ -1224,7 +1230,7 @@ fn triage_tool_defs(provider: Provider) -> serde_json::Value {
     ])
 }
 
-fn parse_subtask_args(args: Option<Vec<SubTaskArg>>) -> Vec<SubTaskSpec> {
+fn parse_subtask_args(args: Option<Vec<SubTaskArg>>, bucket_names: &[String]) -> Vec<SubTaskSpec> {
     args.unwrap_or_default()
         .into_iter()
         .filter_map(|st| {
@@ -1239,7 +1245,7 @@ fn parse_subtask_args(args: Option<Vec<SubTaskArg>>) -> Vec<SubTaskSpec> {
                     .as_deref()
                     .map(|s| truncate(s.trim(), 400).to_string())
                     .unwrap_or_default(),
-                bucket: st.bucket.as_deref().and_then(parse_bucket),
+                bucket: st.bucket.as_deref().and_then(|b| parse_bucket(b, bucket_names)),
                 priority: st
                     .priority
                     .as_deref()
@@ -1326,7 +1332,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
         }
     }
 
-    let tools = triage_tool_defs(cfg.provider);
+    let tools = triage_tool_defs(cfg.provider, &job.bucket_names);
 
     let (tool_name, args) = match call_llm_with_tools(cfg, system, &user_prompt, &tools) {
         Ok(result) => result,
@@ -1341,13 +1347,13 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                 Ok(v) => v,
                 Err(e) => return err_result(format!("Failed to parse create_task args: {e}")),
             };
-            let sub_task_specs = parse_subtask_args(parsed.subtasks);
+            let sub_task_specs = parse_subtask_args(parsed.subtasks, &job.bucket_names);
             AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate {
                     is_edit: false,
                     title: Some(truncate(parsed.title.trim(), 200).to_string()),
-                    bucket: parse_bucket(&parsed.bucket),
+                    bucket: parse_bucket(&parsed.bucket, &job.bucket_names),
                     description: parsed
                         .description
                         .as_deref()
@@ -1379,7 +1385,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                 Err(e) => return err_result(format!("Failed to parse update_task args: {e}")),
             };
             let target = parsed.target_id.trim().to_string();
-            let sub_task_specs = parse_subtask_args(parsed.subtasks);
+            let sub_task_specs = parse_subtask_args(parsed.subtasks, &job.bucket_names);
             let triage_action = if target.is_empty() {
                 Some(TriageAction::Create)
             } else {
@@ -1396,7 +1402,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                         .map(|s| truncate(s, 200).to_string()),
-                    bucket: parsed.bucket.as_deref().and_then(parse_bucket),
+                    bucket: parsed.bucket.as_deref().and_then(|b| parse_bucket(b, &job.bucket_names)),
                     description: parsed
                         .description
                         .as_deref()
@@ -1444,7 +1450,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                 Ok(v) => v,
                 Err(e) => return err_result(format!("Failed to parse decompose_task args: {e}")),
             };
-            let specs = parse_subtask_args(Some(parsed.subtasks));
+            let specs = parse_subtask_args(Some(parsed.subtasks), &job.bucket_names);
             if specs.is_empty() {
                 return err_result("decompose_task: no subtasks provided".to_string());
             }
