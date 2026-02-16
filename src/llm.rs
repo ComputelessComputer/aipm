@@ -977,19 +977,61 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tool-calling argument structs for triage
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize)]
-struct TriageEnriched {
-    action: Option<String>,
-    target_id: Option<String>,
-    target_ids: Option<Vec<String>>,
+struct SubTaskArg {
+    title: String,
+    description: Option<String>,
+    bucket: Option<String>,
+    priority: Option<String>,
+    progress: Option<String>,
+    due_date: Option<String>,
+    depends_on: Option<Vec<usize>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskArgs {
+    title: String,
+    bucket: String,
+    description: Option<String>,
+    priority: Option<String>,
+    progress: Option<String>,
+    due_date: Option<String>,
+    dependencies: Option<Vec<String>>,
+    subtasks: Option<Vec<SubTaskArg>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTaskArgs {
+    target_id: String,
     title: Option<String>,
     bucket: Option<String>,
     description: Option<String>,
-    progress: Option<String>,
     priority: Option<String>,
+    progress: Option<String>,
     due_date: Option<String>,
     dependencies: Option<Vec<String>>,
-    subtasks: Option<Vec<SubTaskEnriched>>,
+    subtasks: Option<Vec<SubTaskArg>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteTaskArgs {
+    target_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecomposeTaskArgs {
+    target_id: Option<String>,
+    subtasks: Vec<SubTaskArg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkUpdateTasksArgs {
+    target_ids: Vec<String>,
+    instruction: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1003,55 +1045,168 @@ struct SubTaskEnriched {
     depends_on: Option<Vec<usize>>,
 }
 
-fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
-    let system = "You are an expert AI project manager. Analyze the user's message and decide whether to CREATE a new task, UPDATE an existing one, DELETE an existing one, BULK UPDATE multiple tasks, or DECOMPOSE a task into smaller sub-issues. Output ONLY valid JSON. No markdown.";
+// ---------------------------------------------------------------------------
+// Tool schema definitions for triage
+// ---------------------------------------------------------------------------
 
-    let triage_ctx = job.triage_context.as_deref().unwrap_or("");
+fn subtask_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short, actionable subtask title"},
+            "description": {"type": "string", "description": "Brief description"},
+            "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+            "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
+            "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
+            "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
+            "depends_on": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "0-based indices into the subtasks array for ordering"
+            }
+        },
+        "required": ["title"]
+    })
+}
 
-    let user = format!(
-        "User message: \"{}\"\n\nExisting tasks:\n{}\nAnalyze the user's intent. Apply the following rules IN ORDER OF PRIORITY (highest first):\n\n*** HIGHEST PRIORITY — DECOMPOSE ***\nIf the user asks to \"break down\", \"decompose\", \"split\", \"create sub-issues\", \"create subtasks\", \"break into smaller tasks\", or ANY similar request to divide work into parts — you MUST use action \"decompose\".\n- Set target_id to the id_prefix of the existing task being decomposed (if one is referenced or can be inferred).\n- Return a \"subtasks\" array with each subtask having: title, description, bucket, priority, progress, due_date, and depends_on.\n- depends_on is an array of 0-based indices into the subtasks array. Set dependencies to reflect natural execution order.\n- NEVER put sub-task breakdowns, numbered lists of sub-tasks, or step-by-step plans into the \"description\" field. That is WRONG. Sub-tasks MUST be actual entries in the \"subtasks\" array.\n- When decomposing, inherit the parent task's bucket and priority for subtasks unless the user specifies otherwise.\n\n*** UPDATE WITH SUBTASKS ***\nWhen updating an existing task, if the user's message contains multiple items, links, or pieces of work that naturally map to individual sub-tasks — use action \"update\" with target_id AND include a \"subtasks\" array. For example: updating a \"review PRs\" task with a list of PR links should create one subtask per PR. The subtasks array format is identical to decompose.\n\n*** OTHER ACTIONS ***\n- If the user wants to remove/delete/cancel a task, use action \"delete\" with target_id.\n- If the message affects MULTIPLE existing tasks (e.g. \"update all titles\", \"mark everything in Admin as done\"), use action \"bulk_update\" with target_ids (list of id_prefix values, or [\"all\"] for every task).\n- If the message is about a SINGLE existing task (status change, field update, clarification — NOT decomposition), use action \"update\" with target_id. You MAY include a \"subtasks\" array if the update implies sub-work items.\n- If it's a genuinely new piece of work that is small/simple enough, CREATE a single task.\n\n*** GENERAL RULES ***\n- For delete: do NOT change any fields, just set action and target_id.\n- Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n- Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\nReturn JSON:\n{{\n  \"action\": \"create\" | \"update\" | \"delete\" | \"bulk_update\" | \"decompose\",\n  \"target_id\": \"id_prefix\" | null,\n  \"target_ids\": [\"id_prefix\", ...] | [\"all\"] | null,\n  \"title\": string | null,\n  \"bucket\": \"Team\"|\"John\"|\"Admin\" | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [\n    {{\n      \"title\": string,\n      \"description\": string,\n      \"bucket\": \"Team\"|\"John\"|\"Admin\",\n      \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\",\n      \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n      \"due_date\": \"YYYY-MM-DD\" | null,\n      \"depends_on\": [0, 1, ...]\n    }}, ...\n  ] | null\n}}\n",
-        raw_input,
-        triage_ctx
-    );
+fn make_tool_def(
+    provider: Provider,
+    name: &str,
+    description: &str,
+    schema: serde_json::Value,
+) -> serde_json::Value {
+    match provider {
+        Provider::OpenAi => json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": schema
+            }
+        }),
+        Provider::Anthropic => json!({
+            "name": name,
+            "description": description,
+            "input_schema": schema
+        }),
+    }
+}
 
-    let err_result = |msg: String| AiResult {
-        task_id: job.task_id,
-        update: TaskUpdate::default(),
-        error: Some(msg),
-        triage_action: None,
-        sub_task_specs: Vec::new(),
-    };
+fn triage_tool_defs(provider: Provider) -> serde_json::Value {
+    let st = subtask_schema();
+    json!([
+        make_tool_def(
+            provider,
+            "create_task",
+            "Create a new task. Use when the user describes genuinely new work.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short, actionable title"},
+                    "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+                    "description": {"type": "string", "description": "Brief task description"},
+                    "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
+                    "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
+                    "dependencies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "id_prefix values of existing tasks this depends on"
+                    },
+                    "subtasks": {
+                        "type": "array",
+                        "items": st.clone(),
+                        "description": "Sub-tasks to create under this task"
+                    }
+                },
+                "required": ["title", "bucket"]
+            })
+        ),
+        make_tool_def(
+            provider,
+            "update_task",
+            "Update an existing task. Use for status changes, field updates, or adding sub-tasks.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "id_prefix of the task to update"},
+                    "title": {"type": "string", "description": "New title"},
+                    "bucket": {"type": "string", "enum": ["Team", "John", "Admin"]},
+                    "description": {"type": "string"},
+                    "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
+                    "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
+                    "dependencies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "id_prefix values of existing tasks this depends on"
+                    },
+                    "subtasks": {
+                        "type": "array",
+                        "items": st.clone(),
+                        "description": "Sub-tasks to create under this task"
+                    }
+                },
+                "required": ["target_id"]
+            })
+        ),
+        make_tool_def(
+            provider,
+            "delete_task",
+            "Delete an existing task.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "id_prefix of the task to delete"}
+                },
+                "required": ["target_id"]
+            })
+        ),
+        make_tool_def(
+            provider,
+            "decompose_task",
+            "Break down a task into smaller sub-tasks. Use when asked to decompose, split, or create sub-issues.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "id_prefix of the task to decompose (if known)"},
+                    "subtasks": {
+                        "type": "array",
+                        "items": st,
+                        "description": "Sub-tasks to create"
+                    }
+                },
+                "required": ["subtasks"]
+            })
+        ),
+        make_tool_def(
+            provider,
+            "bulk_update_tasks",
+            "Update multiple tasks at once. Use when the instruction affects many tasks.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "id_prefix values, or [\"all\"] for every task"
+                    },
+                    "instruction": {"type": "string", "description": "What to change"}
+                },
+                "required": ["target_ids", "instruction"]
+            })
+        ),
+    ])
+}
 
-    let content = match call_llm(cfg, system, &user) {
-        Ok(text) => text,
-        Err(err) => return err_result(err),
-    };
-
-    let json_text = extract_json_object(&content).unwrap_or_else(|| content.trim().to_string());
-
-    let mut triaged: TriageEnriched = match serde_json::from_str(&json_text) {
-        Ok(v) => v,
-        Err(err) => {
-            return err_result(format!(
-                "AI output not valid JSON ({err}): {}",
-                truncate(&content, 200)
-            ));
-        }
-    };
-
-    let action_str = triaged.action.as_deref().unwrap_or("create");
-    let parsed_subtasks: Vec<SubTaskSpec> = triaged
-        .subtasks
-        .take()
-        .unwrap_or_default()
+fn parse_subtask_args(args: Option<Vec<SubTaskArg>>) -> Vec<SubTaskSpec> {
+    args.unwrap_or_default()
         .into_iter()
         .filter_map(|st| {
-            let title = st
-                .title
-                .as_deref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())?
-                .to_string();
+            let title = st.title.trim().to_string();
+            if title.is_empty() {
+                return None;
+            }
             Some(SubTaskSpec {
                 title: truncate(&title, 200).to_string(),
                 description: st
@@ -1076,146 +1231,242 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
             })
         })
         .take(12)
-        .collect();
-    let triage_action = match action_str {
-        "update" => {
-            if let Some(target) = triaged
-                .target_id
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-            {
-                Some(TriageAction::Update(target.trim().to_string()))
-            } else {
-                Some(TriageAction::Create)
+        .collect()
+}
+
+fn resolve_deps(deps: Option<Vec<String>>, allowed: &HashSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for dep in deps.unwrap_or_default().into_iter().take(8) {
+        let prefix = dep.trim();
+        if prefix.len() < 4 {
+            continue;
+        }
+        let key = prefix.chars().take(8).collect::<String>();
+        if allowed.contains(&key) && !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
+    let err_result = |msg: String| AiResult {
+        task_id: job.task_id,
+        update: TaskUpdate::default(),
+        error: Some(msg),
+        triage_action: None,
+        sub_task_specs: Vec::new(),
+    };
+
+    // Fetch URL contexts for any links in the user's message.
+    let urls = extract_urls(raw_input);
+    let url_contexts = if urls.is_empty() {
+        Vec::new()
+    } else {
+        fetch_url_contexts(&urls, cfg.timeout)
+    };
+
+    let system = "You are an expert AI project manager. Analyze the user's message and call \
+        the appropriate tool.\n\
+        Rules:\n\
+        - Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n\
+        - Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\
+        - If the user asks to break down, decompose, split, or create sub-tasks, use decompose_task.\n\
+        - When updating a task with multiple items/links that map to sub-tasks, include them in the subtasks array.\n\
+        - NEVER put sub-task breakdowns or numbered lists into the description field. Use the subtasks array.\n\
+        - Subtasks inherit the parent task's bucket and priority unless specified otherwise.\n\
+        - For delete: just call delete_task with the target_id.";
+
+    let triage_ctx = job.triage_context.as_deref().unwrap_or("");
+
+    let mut user_prompt = format!(
+        "User message: \"{}\"\n\nExisting tasks:\n{}",
+        raw_input, triage_ctx
+    );
+
+    if !url_contexts.is_empty() {
+        user_prompt.push_str("\nReferenced URLs:\n");
+        for ctx in &url_contexts {
+            user_prompt.push_str(&format!("- {}\n  {}\n", ctx.url, ctx.summary));
+        }
+    }
+
+    if !job.chat_history.is_empty() {
+        user_prompt.push_str("\nRecent conversation:\n");
+        for entry in job.chat_history.iter().rev().take(10).rev() {
+            user_prompt.push_str(&format!(
+                "User: {}\nResult: {}\n\n",
+                entry.user_input, entry.ai_summary
+            ));
+        }
+    }
+
+    let tools = triage_tool_defs(cfg.provider);
+
+    let (tool_name, args) = match call_llm_with_tools(cfg, system, &user_prompt, &tools) {
+        Ok(result) => result,
+        Err(err) => return err_result(err),
+    };
+
+    let allowed: HashSet<String> = job.context.iter().map(|t| short_id(t.id)).collect();
+
+    match tool_name.as_str() {
+        "create_task" => {
+            let parsed: CreateTaskArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => return err_result(format!("Failed to parse create_task args: {e}")),
+            };
+            let sub_task_specs = parse_subtask_args(parsed.subtasks);
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate {
+                    is_edit: false,
+                    title: Some(truncate(parsed.title.trim(), 200).to_string()),
+                    bucket: parse_bucket(&parsed.bucket),
+                    description: parsed
+                        .description
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| truncate(s, 400).to_string()),
+                    progress: parsed
+                        .progress
+                        .as_deref()
+                        .and_then(|s| parse_progress(s.trim())),
+                    priority: parsed
+                        .priority
+                        .as_deref()
+                        .and_then(|s| parse_priority(s.trim())),
+                    due_date: parsed
+                        .due_date
+                        .as_deref()
+                        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                    dependencies: resolve_deps(parsed.dependencies, &allowed),
+                },
+                error: None,
+                triage_action: Some(TriageAction::Create),
+                sub_task_specs,
             }
         }
-        "delete" => {
-            if let Some(target) = triaged
-                .target_id
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-            {
-                Some(TriageAction::Delete(target.trim().to_string()))
-            } else {
-                // Can't delete without a target; fall back to create.
+        "update_task" => {
+            let parsed: UpdateTaskArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => return err_result(format!("Failed to parse update_task args: {e}")),
+            };
+            let target = parsed.target_id.trim().to_string();
+            let sub_task_specs = parse_subtask_args(parsed.subtasks);
+            let triage_action = if target.is_empty() {
                 Some(TriageAction::Create)
+            } else {
+                Some(TriageAction::Update(target))
+            };
+            let is_edit = matches!(&triage_action, Some(TriageAction::Update(_)));
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate {
+                    is_edit,
+                    title: parsed
+                        .title
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| truncate(s, 200).to_string()),
+                    bucket: parsed.bucket.as_deref().and_then(parse_bucket),
+                    description: parsed
+                        .description
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| truncate(s, 400).to_string()),
+                    progress: parsed
+                        .progress
+                        .as_deref()
+                        .and_then(|s| parse_progress(s.trim())),
+                    priority: parsed
+                        .priority
+                        .as_deref()
+                        .and_then(|s| parse_priority(s.trim())),
+                    due_date: parsed
+                        .due_date
+                        .as_deref()
+                        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                    dependencies: resolve_deps(parsed.dependencies, &allowed),
+                },
+                error: None,
+                triage_action,
+                sub_task_specs,
             }
         }
-        "bulk_update" => {
-            let targets: Vec<String> = triaged
+        "delete_task" => {
+            let parsed: DeleteTaskArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => return err_result(format!("Failed to parse delete_task args: {e}")),
+            };
+            let target = parsed.target_id.trim().to_string();
+            if target.is_empty() {
+                return err_result("delete_task: empty target_id".to_string());
+            }
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate::default(),
+                error: None,
+                triage_action: Some(TriageAction::Delete(target)),
+                sub_task_specs: Vec::new(),
+            }
+        }
+        "decompose_task" => {
+            let parsed: DecomposeTaskArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => return err_result(format!("Failed to parse decompose_task args: {e}")),
+            };
+            let specs = parse_subtask_args(Some(parsed.subtasks));
+            if specs.is_empty() {
+                return err_result("decompose_task: no subtasks provided".to_string());
+            }
+            let target_id = parsed
+                .target_id
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate::default(),
+                error: None,
+                triage_action: Some(TriageAction::Decompose {
+                    target_id,
+                    specs: specs.clone(),
+                }),
+                sub_task_specs: Vec::new(),
+            }
+        }
+        "bulk_update_tasks" => {
+            let parsed: BulkUpdateTasksArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => {
+                    return err_result(format!("Failed to parse bulk_update_tasks args: {e}"))
+                }
+            };
+            let targets: Vec<String> = parsed
                 .target_ids
-                .unwrap_or_default()
                 .into_iter()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
             if targets.is_empty() {
-                Some(TriageAction::Create)
-            } else {
-                Some(TriageAction::BulkUpdate {
+                return err_result("bulk_update_tasks: empty target_ids".to_string());
+            }
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate::default(),
+                error: None,
+                triage_action: Some(TriageAction::BulkUpdate {
                     targets,
-                    instruction: raw_input.to_string(),
-                })
+                    instruction: parsed.instruction,
+                }),
+                sub_task_specs: Vec::new(),
             }
         }
-        "decompose" => {
-            let decompose_target = triaged
-                .target_id
-                .as_deref()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            if parsed_subtasks.is_empty() {
-                Some(TriageAction::Create)
-            } else {
-                Some(TriageAction::Decompose {
-                    target_id: decompose_target,
-                    specs: parsed_subtasks.clone(),
-                })
-            }
-        }
-        _ => Some(TriageAction::Create),
-    };
-
-    let mut update = TaskUpdate {
-        is_edit: matches!(&triage_action, Some(TriageAction::Update(_))),
-        ..TaskUpdate::default()
-    };
-
-    update.title = triaged
-        .title
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| truncate(s, 200).to_string());
-
-    if let Some(bucket) = triaged.bucket.as_deref().and_then(parse_bucket) {
-        update.bucket = Some(bucket);
-    }
-
-    update.description = triaged
-        .description
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| truncate(s, 400).to_string());
-
-    if let Some(prio) = triaged
-        .priority
-        .as_deref()
-        .and_then(|s| parse_priority(s.trim()))
-    {
-        update.priority = Some(prio);
-    }
-
-    if let Some(prog) = triaged
-        .progress
-        .as_deref()
-        .and_then(|s| parse_progress(s.trim()))
-    {
-        update.progress = Some(prog);
-    }
-
-    if let Some(date_str) = triaged.due_date.as_deref().map(|s| s.trim()) {
-        if !date_str.is_empty() {
-            if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                update.due_date = Some(date);
-            }
-        }
-    }
-
-    let allowed: HashSet<String> = job
-        .context
-        .iter()
-        .map(|t| short_id(t.id))
-        .collect::<HashSet<_>>();
-
-    if let Some(deps) = triaged.dependencies {
-        let mut out = Vec::new();
-        for dep in deps.into_iter().take(8) {
-            let prefix = dep.trim();
-            if prefix.len() < 4 {
-                continue;
-            }
-            let key = prefix.chars().take(8).collect::<String>();
-            if allowed.contains(&key) && !out.contains(&key) {
-                out.push(key);
-            }
-        }
-        update.dependencies = out;
-    }
-
-    // For "update" action, carry parsed subtasks so main.rs can create child tasks.
-    let sub_task_specs = match &triage_action {
-        Some(TriageAction::Update(_)) => parsed_subtasks,
-        _ => Vec::new(),
-    };
-
-    AiResult {
-        task_id: job.task_id,
-        update,
-        error: None,
-        triage_action,
-        sub_task_specs,
+        other => err_result(format!("Unknown tool: {other}")),
     }
 }
 
