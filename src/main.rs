@@ -2782,9 +2782,10 @@ fn bucket_task_indices(tasks: &[Task], bucket_name: &str, settings: &AiSettings)
     indices.sort_by(|&a, &b| {
         let ta = &tasks[a];
         let tb = &tasks[b];
-        ta.progress
+        tb.progress
             .stage_index()
-            .cmp(&tb.progress.stage_index())
+            .cmp(&ta.progress.stage_index())
+            .then_with(|| tb.priority.cmp(&ta.priority))
             .then_with(|| tb.created_at.cmp(&ta.created_at))
     });
 
