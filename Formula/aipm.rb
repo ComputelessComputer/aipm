@@ -1,7 +1,7 @@
 class Aipm < Formula
   desc "AI-powered project manager for the terminal"
   homepage "https://github.com/ComputelessComputer/aipm"
-  url "https://github.com/ComputelessComputer/aipm/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/ComputelessComputer/aipm/archive/refs/tags/v0.0.1.tar.gz"
   sha256 "PLACEHOLDER"
   license "MIT"
 

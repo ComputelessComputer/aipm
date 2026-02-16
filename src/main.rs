@@ -3096,6 +3096,15 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         ResetColor
     )?;
 
+    // Version.
+    queue!(
+        stdout,
+        MoveTo(x, status_y + 2),
+        SetForegroundColor(Color::DarkGrey),
+        Print(format!(" aipm v{}", env!("CARGO_PKG_VERSION"))),
+        ResetColor
+    )?;
+
     // Cursor.
     if app.settings_editing {
         let field_idx = SettingsField::ALL
