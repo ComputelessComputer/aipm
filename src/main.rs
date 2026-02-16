@@ -625,6 +625,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                 task_snapshot: None,
                                 triage_input: Some(instruction),
                                 triage_context: Some(triage_ctx),
+                    chat_history: Vec::new(),
                             });
                             app.status =
                                 Some(("AI decomposing…".to_string(), Instant::now(), true));
@@ -649,6 +650,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                     task_snapshot: Some(snapshot),
                                     triage_input: None,
                                     triage_context: None,
+                    chat_history: Vec::new(),
                                 });
                                 app.status = Some((
                                     format!("AI editing: {}…", task.title),
@@ -690,6 +692,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     task_snapshot: None,
                     triage_input: Some(raw_input),
                     triage_context: Some(triage_ctx),
+                    chat_history: Vec::new(),
                 });
                 app.status = Some(("AI thinking…".to_string(), Instant::now(), true));
             } else {
@@ -1869,6 +1872,7 @@ fn poll_ai(app: &mut App) -> bool {
                                     task_snapshot: Some(snapshot),
                                     triage_input: None,
                                     triage_context: None,
+                    chat_history: Vec::new(),
                                 });
                             }
                         }
@@ -4060,6 +4064,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
         task_snapshot: None,
         triage_input: Some(instruction.to_string()),
         triage_context: Some(triage_ctx),
+                    chat_history: Vec::new(),
     });
 
     let mut pending = 1u32;
@@ -4330,6 +4335,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                                     task_snapshot: Some(snapshot),
                                     triage_input: None,
                                     triage_context: None,
+                    chat_history: Vec::new(),
                                 });
                             }
                         }

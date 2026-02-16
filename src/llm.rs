@@ -19,6 +19,13 @@ pub struct ContextTask {
     pub title: String,
 }
 
+/// A single exchange in the conversation history.
+#[derive(Debug, Clone)]
+pub struct ChatEntry {
+    pub user_input: String,
+    pub ai_summary: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AiJob {
     pub task_id: Uuid,
@@ -36,6 +43,8 @@ pub struct AiJob {
     pub triage_input: Option<String>,
     /// Pre-formatted full task list for triage context.
     pub triage_context: Option<String>,
+    /// Recent conversation history for triage context.
+    pub chat_history: Vec<ChatEntry>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -231,8 +240,242 @@ fn worker_loop(cfg: LlmConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResu
     }
 }
 
+/// Whether an LLM error is transient and worth retrying.
+fn is_retryable(err: &str) -> bool {
+    // Transport / timeout errors.
+    if err.contains("transport error") || err.contains("response read failed") {
+        return true;
+    }
+    // Rate-limit or server errors.
+    if err.contains("HTTP 429") || err.contains("HTTP 5") {
+        return true;
+    }
+    false
+}
+
+const MAX_RETRIES: u32 = 2;
+const RETRY_DELAYS: [u64; 2] = [1, 3];
+
+/// Execute `f` with up to MAX_RETRIES retries on transient failures.
+fn with_retry<T, F: Fn() -> Result<T, String>>(f: F) -> Result<T, String> {
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        match f() {
+            Ok(val) => return Ok(val),
+            Err(err) => {
+                if attempt < MAX_RETRIES && is_retryable(&err) {
+                    thread::sleep(Duration::from_secs(RETRY_DELAYS[attempt as usize]));
+                    last_err = err;
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+    Err(last_err)
+}
+
+// ---------------------------------------------------------------------------
+// URL content fetching
+// ---------------------------------------------------------------------------
+
+struct UrlContext {
+    url: String,
+    summary: String,
+}
+
+/// Extract URLs from text.
+fn extract_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for token in text.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '<' || c == '>' || c == ',' || c == ')');
+        if t.starts_with("http://") || t.starts_with("https://") {
+            urls.push(t.to_string());
+        }
+    }
+    urls
+}
+
+/// Try to parse a GitHub PR/issue URL into (owner, repo, number, kind).
+fn parse_github_url(url: &str) -> Option<(String, String, String, &'static str)> {
+    // https://github.com/{owner}/{repo}/pull/{number}
+    // https://github.com/{owner}/{repo}/issues/{number}
+    let path = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let owner = parts[0].to_string();
+    let repo = parts[1].to_string();
+    let kind = match parts[2] {
+        "pull" => "pulls",
+        "issues" => "issues",
+        _ => return None,
+    };
+    let number = parts[3].split('?').next()?.split('#').next()?;
+    if number.chars().all(|c| c.is_ascii_digit()) {
+        Some((owner, repo, number.to_string(), kind))
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPr {
+    title: Option<String>,
+    body: Option<String>,
+    state: Option<String>,
+    user: Option<GhUser>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhUser {
+    login: Option<String>,
+}
+
+/// Fetch context for a list of URLs. Best-effort; failures are silently skipped.
+fn fetch_url_contexts(urls: &[String], timeout: Duration) -> Vec<UrlContext> {
+    let mut out = Vec::new();
+    for url in urls.iter().take(15) {
+        if let Some(ctx) = fetch_single_url(url, timeout) {
+            out.push(ctx);
+        }
+    }
+    out
+}
+
+fn fetch_single_url(url: &str, timeout: Duration) -> Option<UrlContext> {
+    if let Some((owner, repo, number, kind)) = parse_github_url(url) {
+        let api_url = format!(
+            "https://api.github.com/repos/{}/{}/{}/{}",
+            owner, repo, kind, number
+        );
+        let resp = ureq::get(&api_url)
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", "aipm")
+            .timeout(timeout)
+            .call()
+            .ok()?;
+        let text = resp.into_string().ok()?;
+        let pr: GhPr = serde_json::from_str(&text).ok()?;
+        let title = pr.title.as_deref().unwrap_or("Untitled");
+        let author = pr
+            .user
+            .as_ref()
+            .and_then(|u| u.login.as_deref())
+            .unwrap_or("unknown");
+        let state = pr.state.as_deref().unwrap_or("unknown");
+        let body_snippet = pr
+            .body
+            .as_deref()
+            .map(|b| truncate(b.trim(), 300))
+            .unwrap_or("");
+        let label = if kind == "pulls" { "PR" } else { "Issue" };
+        let summary = format!(
+            "{} #{}: {} (by {}, {})\n{}",
+            label, number, title, author, state, body_snippet
+        );
+        return Some(UrlContext {
+            url: url.to_string(),
+            summary,
+        });
+    }
+
+    // Generic URL: fetch and strip HTML.
+    let resp = ureq::get(url)
+        .set("User-Agent", "aipm")
+        .timeout(timeout)
+        .call()
+        .ok()?;
+    let body = resp.into_string().ok()?;
+    let title = extract_html_title(&body).unwrap_or_default();
+    let text = strip_html_tags(&body);
+    let snippet = truncate(text.trim(), 500);
+    let summary = if title.is_empty() {
+        snippet.to_string()
+    } else {
+        format!("{}\n{}", title, snippet)
+    };
+    if summary.trim().is_empty() {
+        return None;
+    }
+    Some(UrlContext {
+        url: url.to_string(),
+        summary,
+    })
+}
+
+fn extract_html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")? + 6;
+    let after_tag = lower[start..].find('>')? + start + 1;
+    let end = lower[after_tag..].find("</title")? + after_tag;
+    let title = html[after_tag..end].trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    for ch in html.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+            out.push(' ');
+        } else if !in_tag {
+            out.push(ch);
+        }
+    }
+    // Collapse whitespace.
+    let mut result = String::new();
+    let mut prev_space = false;
+    for ch in out.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                result.push(' ');
+                prev_space = true;
+            }
+        } else {
+            result.push(ch);
+            prev_space = false;
+        }
+    }
+    result
+}
+
+/// Send a raw HTTP request to the LLM and return the response body.
+fn send_llm_request(cfg: &LlmConfig, body: &serde_json::Value) -> Result<String, String> {
+    let mut req = ureq::post(&cfg.api_url)
+        .set("Content-Type", "application/json")
+        .timeout(cfg.timeout);
+
+    req = match cfg.provider {
+        Provider::OpenAi => req.set("Authorization", &format!("Bearer {}", cfg.api_key)),
+        Provider::Anthropic => req
+            .set("x-api-key", &cfg.api_key)
+            .set("anthropic-version", "2023-06-01"),
+    };
+
+    let resp = req.send_string(&body.to_string());
+
+    match resp {
+        Ok(r) => r
+            .into_string()
+            .map_err(|err| format!("AI response read failed: {err}")),
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            Err(format!("AI HTTP {}: {}", code, truncate(&body, 200)))
+        }
+        Err(ureq::Error::Transport(t)) => Err(format!("AI transport error: {t}")),
+    }
+}
+
 /// Send a system+user prompt to the configured LLM and return the text content.
-/// Handles OpenAI and Anthropic API formats.
 fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String> {
     let body = match cfg.provider {
         Provider::OpenAi => json!({
@@ -252,33 +495,8 @@ fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String>
         }),
     };
 
-    let mut req = ureq::post(&cfg.api_url)
-        .set("Content-Type", "application/json")
-        .timeout(cfg.timeout);
+    let text = with_retry(|| send_llm_request(cfg, &body))?;
 
-    req = match cfg.provider {
-        Provider::OpenAi => req.set("Authorization", &format!("Bearer {}", cfg.api_key)),
-        Provider::Anthropic => req
-            .set("x-api-key", &cfg.api_key)
-            .set("anthropic-version", "2023-06-01"),
-    };
-
-    let resp = req.send_string(&body.to_string());
-
-    let text = match resp {
-        Ok(r) => r
-            .into_string()
-            .map_err(|err| format!("AI response read failed: {err}"))?,
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            return Err(format!("AI HTTP {}: {}", code, truncate(&body, 200)));
-        }
-        Err(ureq::Error::Transport(t)) => {
-            return Err(format!("AI transport error: {t}"));
-        }
-    };
-
-    // Extract the assistant's text content from the response.
     match cfg.provider {
         Provider::OpenAi => {
             let chat: ChatResponse = serde_json::from_str(&text)
@@ -305,6 +523,74 @@ fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String>
                 })
                 .collect::<Vec<_>>()
                 .join(""))
+        }
+    }
+}
+
+/// Send a prompt with tool definitions and return the first tool call.
+/// Returns (tool_name, parsed_arguments) on success.
+fn call_llm_with_tools(
+    cfg: &LlmConfig,
+    system: &str,
+    user: &str,
+    tools: &serde_json::Value,
+) -> Result<(String, serde_json::Value), String> {
+    let body = match cfg.provider {
+        Provider::OpenAi => json!({
+            "model": cfg.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ],
+            "tools": tools,
+            "tool_choice": "required"
+        }),
+        Provider::Anthropic => json!({
+            "model": cfg.model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [
+                {"role": "user", "content": user}
+            ],
+            "tools": tools,
+            "tool_choice": {"type": "any"}
+        }),
+    };
+
+    let text = with_retry(|| send_llm_request(cfg, &body))?;
+
+    match cfg.provider {
+        Provider::OpenAi => {
+            let chat: ChatResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            let tool_call = chat
+                .choices
+                .first()
+                .and_then(|c| c.message.tool_calls.as_ref())
+                .and_then(|tc| tc.first())
+                .ok_or_else(|| "AI returned no tool call".to_string())?;
+            let args: serde_json::Value =
+                serde_json::from_str(&tool_call.function.arguments)
+                    .map_err(|err| format!("AI tool args parse failed: {err}"))?;
+            Ok((tool_call.function.name.clone(), args))
+        }
+        Provider::Anthropic => {
+            let resp: AnthropicResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            let tool_block = resp
+                .content
+                .iter()
+                .find(|b| b.block_type == "tool_use")
+                .ok_or_else(|| "AI returned no tool_use block".to_string())?;
+            let name = tool_block
+                .name
+                .clone()
+                .ok_or_else(|| "tool_use block missing name".to_string())?;
+            let input = tool_block
+                .input
+                .clone()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            Ok((name, input))
         }
     }
 }
@@ -446,12 +732,24 @@ struct ChatResponse {
 
 #[derive(Debug, Deserialize)]
 struct Choice {
-    message: Message,
+    message: ChatMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct Message {
+struct ChatMessage {
     content: Option<String>,
+    tool_calls: Option<Vec<ChatToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatToolCall {
+    function: ChatToolFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatToolFunction {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -464,6 +762,8 @@ struct AnthropicContentBlock {
     #[serde(rename = "type")]
     block_type: String,
     text: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
