@@ -2287,7 +2287,7 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
 
     queue!(stdout, MoveTo(x_input, y_input))?;
     match app.focus {
-        Focus::Input => queue!(stdout, SetForegroundColor(Color::White))?,
+        Focus::Input => queue!(stdout, ResetColor)?,
         Focus::Tabs | Focus::Board | Focus::Edit => {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?
         }
