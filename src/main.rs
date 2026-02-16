@@ -1251,7 +1251,23 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 load_edit_buf(app);
             }
             KeyCode::Backspace => {
-                app.edit_buf.pop();
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    // Cmd+Backspace: delete to start of line.
+                    app.edit_buf.clear();
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    // Option+Backspace: delete word before cursor.
+                    while app.edit_buf.chars().last() == Some(' ') {
+                        app.edit_buf.pop();
+                    }
+                    while let Some(ch) = app.edit_buf.chars().last() {
+                        if ch == ' ' {
+                            break;
+                        }
+                        app.edit_buf.pop();
+                    }
+                } else {
+                    app.edit_buf.pop();
+                }
             }
             KeyCode::Char(ch) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1718,7 +1734,23 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             // Stay in edit mode — user presses Esc to leave.
         }
         KeyCode::Backspace => {
-            app.settings_buf.pop();
+            if key.modifiers.contains(KeyModifiers::SUPER) {
+                // Cmd+Backspace: delete to start of line.
+                app.settings_buf.clear();
+            } else if key.modifiers.contains(KeyModifiers::ALT) {
+                // Option+Backspace: delete word before cursor.
+                while app.settings_buf.chars().last() == Some(' ') {
+                    app.settings_buf.pop();
+                }
+                while let Some(ch) = app.settings_buf.chars().last() {
+                    if ch == ' ' {
+                        break;
+                    }
+                    app.settings_buf.pop();
+                }
+            } else {
+                app.settings_buf.pop();
+            }
         }
         KeyCode::Char(ch) => {
             app.settings_buf.push(ch);
