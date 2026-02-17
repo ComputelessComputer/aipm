@@ -154,3 +154,30 @@ pub fn children_of(tasks: &[Task], parent_id: Uuid) -> Vec<usize> {
         .map(|(i, _)| i)
         .collect()
 }
+
+/// Derive a parent's progress from its children.
+///
+/// - All children Done → Done
+/// - Any InProgress, or mix of Done and not-Done → InProgress
+/// - Any Todo (none InProgress or Done) → Todo
+/// - All Backlog → Backlog
+/// - No children → None (leave parent unchanged)
+pub fn compute_parent_progress(children_progress: &[Progress]) -> Option<Progress> {
+    if children_progress.is_empty() {
+        return None;
+    }
+    let all_done = children_progress.iter().all(|p| *p == Progress::Done);
+    if all_done {
+        return Some(Progress::Done);
+    }
+    let any_in_progress = children_progress.iter().any(|p| *p == Progress::InProgress);
+    let any_done = children_progress.iter().any(|p| *p == Progress::Done);
+    if any_in_progress || any_done {
+        return Some(Progress::InProgress);
+    }
+    let any_todo = children_progress.iter().any(|p| *p == Progress::Todo);
+    if any_todo {
+        return Some(Progress::Todo);
+    }
+    Some(Progress::Backlog)
+}

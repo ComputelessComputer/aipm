@@ -20,7 +20,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{children_of, Priority, Progress, Task};
+use crate::model::{children_of, compute_parent_progress, Priority, Progress, Task};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,6 +421,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     // Ctrl-C always quits.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(true);
+    }
+
+    // Cmd+C: copy selected task title to clipboard.
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::SUPER) {
+        if let Some(title) = focused_task_title(app) {
+            copy_to_clipboard(&title);
+            let display = if title.len() > 40 {
+                format!("Copied: {}…", &title[..40])
+            } else {
+                format!("Copied: {}", title)
+            };
+            app.status = Some((display, Instant::now(), false));
+        }
+        return Ok(false);
     }
 
     // Toast dismissal intercepts all keys (skip for persistent toasts).
@@ -2417,6 +2431,53 @@ fn move_kanban_selection(app: &mut App, delta: i32) {
     scroll_kanban_to_selected(app);
 }
 
+fn focused_task_title(app: &App) -> Option<String> {
+    let task_id = if app.focus == Focus::Edit {
+        if app.edit_field == EditField::SubIssues {
+            app.edit_task_id.and_then(|pid| {
+                let child_ids: Vec<Uuid> = children_of(&app.tasks, pid)
+                    .iter()
+                    .map(|&i| app.tasks[i].id)
+                    .collect();
+                child_ids
+                    .get(app.edit_sub_selected)
+                    .copied()
+                    .or(app.edit_task_id)
+            })
+        } else {
+            app.edit_task_id
+        }
+    } else {
+        match app.tab {
+            Tab::Default => app.selected_task_id,
+            Tab::Timeline => {
+                let indices = sorted_timeline_tasks(&app.tasks);
+                indices
+                    .get(app.timeline_selected)
+                    .map(|&idx| app.tasks[idx].id)
+            }
+            Tab::Kanban => app.kanban_selected,
+            Tab::Settings => None,
+        }
+    };
+    task_id.and_then(|id| {
+        app.tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.title.clone())
+    })
+}
+
+fn copy_to_clipboard(text: &str) {
+    use std::process::{Command, Stdio};
+    if let Ok(mut child) = Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 fn persist(app: &mut App) {
     let Some(storage) = &app.storage else {
         return;
@@ -3157,6 +3218,35 @@ fn apply_update(
     }
 
     task_changed
+}
+
+/// After a child task's progress changes, recompute its parent's progress.
+/// Returns true if the parent was updated.
+fn sync_parent_progress(tasks: &mut [Task], child_id: Uuid, now: chrono::DateTime<Utc>) -> bool {
+    let parent_id = match tasks
+        .iter()
+        .find(|t| t.id == child_id)
+        .and_then(|t| t.parent_id)
+    {
+        Some(pid) => pid,
+        None => return false,
+    };
+    let child_progresses: Vec<Progress> = tasks
+        .iter()
+        .filter(|t| t.parent_id == Some(parent_id))
+        .map(|t| t.progress)
+        .collect();
+    let new_progress = match compute_parent_progress(&child_progresses) {
+        Some(p) => p,
+        None => return false,
+    };
+    if let Some(parent) = tasks.iter_mut().find(|t| t.id == parent_id) {
+        if parent.progress != new_progress {
+            parent.set_progress(new_progress, now);
+            return true;
+        }
+    }
+    false
 }
 
 fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
