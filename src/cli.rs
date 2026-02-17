@@ -3,7 +3,7 @@ use std::io;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::model::{children_of, BucketDef, Priority, Progress, Task};
+use crate::model::{children_of, compute_parent_progress, BucketDef, Priority, Progress, Task};
 use crate::storage::{AiSettings, Storage};
 
 // ---------------------------------------------------------------------------
@@ -212,8 +212,10 @@ fn cmd_task_edit(args: &[String]) -> io::Result<()> {
         task.priority = parse_priority(&p);
         task.updated_at = now;
     }
+    let mut progress_changed = false;
     if let Some(p) = find_flag(args, "--progress") {
         task.set_progress(parse_progress(&p), now);
+        progress_changed = true;
     }
     if let Some(d) = find_flag(args, "--due") {
         if d.is_empty() || d == "none" {
@@ -227,9 +229,35 @@ fn cmd_task_edit(args: &[String]) -> io::Result<()> {
     }
 
     let task_clone = task.clone();
+    if progress_changed {
+        sync_parent_progress(&mut tasks, task_id, now);
+    }
     save_tasks(&storage, &tasks);
     print_json(&task_clone);
     Ok(())
+}
+
+fn sync_parent_progress(tasks: &mut [Task], child_id: Uuid, now: chrono::DateTime<Utc>) {
+    let parent_id = match tasks
+        .iter()
+        .find(|t| t.id == child_id)
+        .and_then(|t| t.parent_id)
+    {
+        Some(pid) => pid,
+        None => return,
+    };
+    let child_progresses: Vec<Progress> = tasks
+        .iter()
+        .filter(|t| t.parent_id == Some(parent_id))
+        .map(|t| t.progress)
+        .collect();
+    if let Some(new_progress) = compute_parent_progress(&child_progresses) {
+        if let Some(parent) = tasks.iter_mut().find(|t| t.id == parent_id) {
+            if parent.progress != new_progress {
+                parent.set_progress(new_progress, now);
+            }
+        }
+    }
 }
 
 fn cmd_task_delete(args: &[String]) -> io::Result<()> {
@@ -258,6 +286,7 @@ fn cmd_task_delete(args: &[String]) -> io::Result<()> {
     for task in &mut tasks {
         task.dependencies.retain(|dep| !all_deleted.contains(dep));
     }
+    sync_parent_progress(&mut tasks, target_id, Utc::now());
 
     save_tasks(&storage, &tasks);
     print_json(&serde_json::json!({

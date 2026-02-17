@@ -170,12 +170,12 @@ pub fn compute_parent_progress(children_progress: &[Progress]) -> Option<Progres
     if all_done {
         return Some(Progress::Done);
     }
-    let any_in_progress = children_progress.iter().any(|p| *p == Progress::InProgress);
-    let any_done = children_progress.iter().any(|p| *p == Progress::Done);
+    let any_in_progress = children_progress.contains(&Progress::InProgress);
+    let any_done = children_progress.contains(&Progress::Done);
     if any_in_progress || any_done {
         return Some(Progress::InProgress);
     }
-    let any_todo = children_progress.iter().any(|p| *p == Progress::Todo);
+    let any_todo = children_progress.contains(&Progress::Todo);
     if any_todo {
         return Some(Progress::Todo);
     }

@@ -5476,24 +5476,43 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                     Progress::Todo => "\u{25cb}",
                     Progress::Backlog => "\u{25cc}",
                 };
-                let row_text = format!("{}  {} {}", " ".repeat(label_w), icon, child.title);
+                let prefix = format!("{}  ", " ".repeat(label_w));
+                let title_text = format!(" {}", child.title);
                 queue!(stdout, MoveTo(inner_x, y_cursor))?;
                 if is_sel {
+                    let row_text = format!("{}{} {}", prefix, icon, child.title);
                     queue!(
                         stdout,
                         SetForegroundColor(Color::Black),
-                        SetBackgroundColor(Color::White)
+                        SetBackgroundColor(Color::White),
+                        Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                        ResetColor
                     )?;
-                } else if is_current {
-                    queue!(stdout, SetForegroundColor(Color::White))?;
                 } else {
-                    queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    let text_color = if is_current {
+                        Color::White
+                    } else {
+                        Color::DarkGrey
+                    };
+                    let icon_max = inner_w.saturating_sub(prefix.width());
+                    let title_max = icon_max.saturating_sub(icon.width() + 1);
+                    queue!(
+                        stdout,
+                        SetForegroundColor(text_color),
+                        Print(&prefix),
+                        SetForegroundColor(progress_color(child.progress)),
+                        Print(icon),
+                        SetForegroundColor(text_color),
+                        Print(clamp_text(&title_text, title_max)),
+                    )?;
+                    let used =
+                        prefix.width() + icon.width() + clamp_text(&title_text, title_max).width();
+                    let pad = inner_w.saturating_sub(used);
+                    if pad > 0 {
+                        queue!(stdout, Print(" ".repeat(pad)))?;
+                    }
+                    queue!(stdout, ResetColor)?;
                 }
-                queue!(
-                    stdout,
-                    Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
-                    ResetColor
-                )?;
                 y_cursor += 1;
             }
 
