@@ -4417,7 +4417,7 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         let value = match field {
             SettingsField::OwnerName => {
                 if app.settings.owner_name.trim().is_empty() {
-                    "John (default)".to_string()
+                    "(not set)".to_string()
                 } else {
                     app.settings.owner_name.clone()
                 }

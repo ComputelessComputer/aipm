@@ -42,7 +42,7 @@ pub struct AiSettings {
 }
 
 fn default_owner_name() -> String {
-    "John".to_string()
+    String::new()
 }
 
 fn default_true() -> bool {
@@ -76,7 +76,7 @@ impl Default for AiSettings {
             model: "claude-sonnet-4-5".to_string(),
             api_url: String::new(),
             timeout_secs: 60,
-            owner_name: "John".to_string(),
+            owner_name: String::new(),
             show_backlog: true,
             show_todo: true,
             show_in_progress: true,
@@ -162,7 +162,7 @@ impl Storage {
         if let Err(err) = storage.migrate_from_json() {
             eprintln!("Migration warning: {err}");
         }
-        // Migrate "John" / "John-only" buckets to "Personal".
+        // Migrate legacy bucket names to "Personal".
         if let Err(err) = storage.migrate_bucket_names() {
             eprintln!("Bucket migration warning: {err}");
         }
@@ -329,7 +329,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Rename legacy "John" and "John-only" buckets to "Personal".
+    /// Rename legacy bucket names ("John", "John-only", "Personal-only") to "Personal".
     fn migrate_bucket_names(&self) -> io::Result<()> {
         let tasks_dir = self.dir.join("tasks");
         if !tasks_dir.is_dir() {
