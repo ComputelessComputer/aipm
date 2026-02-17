@@ -1149,7 +1149,7 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
         make_tool_def(
             provider,
             "create_task",
-            "Create a new task. Use when the user describes genuinely new work.",
+            "Create a new task. Use ONLY when the user describes genuinely new work that does NOT overlap with any existing task or sub-task. Always check existing tasks first.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1176,7 +1176,7 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
         make_tool_def(
             provider,
             "update_task",
-            "Update an existing task. Use for status changes, field updates, or adding sub-tasks.",
+            "Update an existing task. PREFER this over create_task when similar work already exists. Use for status changes, field updates, or adding sub-tasks.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1323,6 +1323,11 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
     let system = "You are an expert AI project manager. Analyze the user's message and call \
         the appropriate tool.\n\
         Rules:\n\
+        - CRITICAL: Before creating ANY task, carefully check ALL existing tasks AND their sub-tasks \
+        (lines starting with ↳). If a task or sub-task with similar meaning already exists, use \
+        update_task instead of create_task. NEVER create a duplicate.\n\
+        - When adding sub-tasks, check the parent's existing sub-tasks first. Do NOT create sub-tasks \
+        that overlap with ones already listed.\n\
         - Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n\
         - Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\
         - If the user asks to break down, decompose, split, or create sub-tasks, use decompose_task.\n\

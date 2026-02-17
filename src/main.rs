@@ -2868,12 +2868,20 @@ fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
 }
 
 /// Build rich context for triage: full task details so the AI can match intent.
+/// Shows parent tasks with their sub-tasks indented to expose the full hierarchy.
 fn build_triage_context(tasks: &[Task]) -> String {
-    let mut refs: Vec<&Task> = tasks.iter().collect();
-    refs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    // Collect parent (root) tasks sorted by recency.
+    let mut parents: Vec<&Task> = tasks.iter().filter(|t| t.parent_id.is_none()).collect();
+    parents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
     let mut out = String::new();
-    for t in refs.iter().take(40) {
+    let mut count = 0usize;
+    let limit = 60;
+
+    for t in &parents {
+        if count >= limit {
+            break;
+        }
         let short = t.id.to_string().chars().take(8).collect::<String>();
         let desc = if t.description.trim().is_empty() {
             ""
@@ -2893,6 +2901,36 @@ fn build_triage_context(tasks: &[Task]) -> String {
                 desc
             }
         ));
+        count += 1;
+
+        // Show children indented under their parent.
+        let children = children_of(tasks, t.id);
+        for &idx in &children {
+            if count >= limit {
+                break;
+            }
+            let child = &tasks[idx];
+            let child_short = child.id.to_string().chars().take(8).collect::<String>();
+            let child_desc = if child.description.trim().is_empty() {
+                ""
+            } else {
+                child.description.trim()
+            };
+            out.push_str(&format!(
+                "  ↳ {} [{}] {} | {} | {} | {}\n",
+                child_short,
+                child.bucket,
+                child.title,
+                child.progress.title(),
+                child.priority.title(),
+                if child_desc.is_empty() {
+                    "no description"
+                } else {
+                    child_desc
+                }
+            ));
+            count += 1;
+        }
     }
     out
 }
