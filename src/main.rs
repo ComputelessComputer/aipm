@@ -2373,10 +2373,12 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 }
 
 fn kanban_task_ids(tasks: &[Task], stage: Progress) -> Vec<Uuid> {
+    let has_children: std::collections::HashSet<Uuid> =
+        tasks.iter().filter_map(|t| t.parent_id).collect();
     let mut ids: Vec<(usize, Uuid)> = tasks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.progress == stage)
+        .filter(|(_, t)| t.progress == stage && !has_children.contains(&t.id))
         .map(|(i, t)| (i, t.id))
         .collect();
     ids.sort_by(|a, b| tasks[b.0].created_at.cmp(&tasks[a.0].created_at));
@@ -4671,7 +4673,19 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 }
             });
 
-            let meta_line = if let Some(due) = &due_str {
+            let meta_line = if let Some(pid) = task.parent_id {
+                let parent_title = app
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == pid)
+                    .map(|t| t.title.as_str())
+                    .unwrap_or("?");
+                if let Some(due) = &due_str {
+                    format!("   {} | {} · {}", task.bucket, parent_title, due)
+                } else {
+                    format!("   {} | {}", task.bucket, parent_title)
+                }
+            } else if let Some(due) = &due_str {
                 format!("   {} · {}", task.bucket, due)
             } else {
                 format!("   {}", task.bucket)
