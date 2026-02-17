@@ -12,3 +12,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 unicode-width = "0.1"
 ureq = { version = "2", features = ["json"] }
 serde_yaml = "0.9"
+base64 = "0.22"

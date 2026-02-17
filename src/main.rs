@@ -304,6 +304,11 @@ fn main() -> io::Result<()> {
         return result;
     }
 
+    // Image ingest subcommand.
+    if args.get(1).map(|s| s.as_str()) == Some("ingest") {
+        return run_ingest(&args[2..]);
+    }
+
     // CLI mode: `aipm "break down all tickets"` — headless AI, no TUI.
     let positional: Vec<&str> = args[1..]
         .iter()
@@ -5906,6 +5911,108 @@ fn choose_layout(total_width: usize, columns: usize) -> (usize, usize) {
     }
 }
 
+fn run_ingest(args: &[String]) -> io::Result<()> {
+    let mut image_path: Option<String> = None;
+    let mut clipboard = false;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--image" => {
+                image_path = iter.next().cloned();
+            }
+            "--clipboard" => {
+                clipboard = true;
+            }
+            other if other.starts_with("--image=") => {
+                image_path = Some(other.strip_prefix("--image=").unwrap().to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if image_path.is_none() && !clipboard {
+        eprintln!("Usage: aipm ingest --image <path>");
+        eprintln!("       aipm ingest --clipboard");
+        std::process::exit(1);
+    }
+
+    let (image_data, media_type) = if clipboard {
+        load_clipboard_image()?
+    } else {
+        load_image_file(image_path.as_deref().unwrap())?
+    };
+
+    let storage = Storage::new();
+    let settings = match &storage {
+        Some(s) => s.load_settings().unwrap_or_default(),
+        None => AiSettings::default(),
+    };
+
+    eprintln!("Extracting tasks from image...");
+
+    let instruction =
+        llm::extract_from_image(&settings, &image_data, &media_type).map_err(io::Error::other)?;
+
+    eprintln!("Extracted: \"{instruction}\"");
+    eprintln!();
+
+    run_cli(&instruction)
+}
+
+fn load_image_file(path: &str) -> io::Result<(Vec<u8>, String)> {
+    let data = std::fs::read(path)?;
+    let media_type = match path
+        .rsplit('.')
+        .next()
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
+    Ok((data, media_type.to_string()))
+}
+
+fn load_clipboard_image() -> io::Result<(Vec<u8>, String)> {
+    let tmp = std::env::temp_dir().join("aipm_clipboard.png");
+    let tmp_str = tmp.to_string_lossy().to_string();
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "set theFile to open for access POSIX file \"{}\" with write permission",
+            tmp_str
+        ))
+        .arg("-e")
+        .arg("set theData to the clipboard as \u{00AB}class PNGf\u{00BB}")
+        .arg("-e")
+        .arg("write theData to theFile")
+        .arg("-e")
+        .arg("close access theFile")
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "Clipboard does not contain an image: {}",
+            err.trim()
+        )));
+    }
+
+    let data = std::fs::read(&tmp)?;
+    let _ = std::fs::remove_file(&tmp);
+
+    if data.is_empty() {
+        return Err(io::Error::other("Clipboard image is empty"));
+    }
+
+    Ok((data, "image/png".to_string()))
+}
+
 fn run_cli(instruction: &str) -> io::Result<()> {
     let storage = Storage::new();
     let mut tasks = match &storage {
@@ -6401,6 +6508,8 @@ fn print_help() {
     println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
     println!("  aipm task <command>              Task CRUD (see below)");
     println!("  aipm bucket <command>            Bucket CRUD (see below)");
+    println!("  aipm ingest --image <path>       Extract tasks from an image via AI");
+    println!("  aipm ingest --clipboard          Extract tasks from clipboard image (macOS)");
     println!("  aipm undo                        Undo the last CLI/AI operation");
     println!("  aipm history                     List recent undo snapshots");
     println!("  aipm --help");

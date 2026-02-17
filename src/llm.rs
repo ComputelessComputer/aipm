@@ -131,83 +131,85 @@ struct LlmConfig {
     timeout: Duration,
 }
 
+fn build_config(settings: &AiSettings) -> Option<LlmConfig> {
+    if !settings.enabled {
+        return None;
+    }
+
+    let model = if !settings.model.trim().is_empty() {
+        settings.model.clone()
+    } else {
+        env::var("AIPM_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                env::var("AIPM_OPENAI_MODEL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| "claude-sonnet-4-5".to_string())
+    };
+
+    let provider = detect_provider(&model);
+
+    let settings_key = match provider {
+        Provider::Anthropic => &settings.anthropic_api_key,
+        Provider::OpenAi => &settings.openai_api_key,
+    };
+    let key = if !settings_key.trim().is_empty() {
+        settings_key.clone()
+    } else {
+        match provider {
+            Provider::Anthropic => env::var("ANTHROPIC_API_KEY").ok()?,
+            Provider::OpenAi => env::var("OPENAI_API_KEY").ok()?,
+        }
+    };
+
+    let default_url = match provider {
+        Provider::Anthropic => "https://api.anthropic.com/v1/messages",
+        Provider::OpenAi => "https://api.openai.com/v1/chat/completions",
+    };
+
+    let api_url = if !settings.api_url.trim().is_empty() {
+        let saved = settings.api_url.trim();
+        if (provider == Provider::Anthropic
+            && saved == "https://api.openai.com/v1/chat/completions")
+            || (provider == Provider::OpenAi && saved == "https://api.anthropic.com/v1/messages")
+        {
+            default_url.to_string()
+        } else {
+            settings.api_url.clone()
+        }
+    } else {
+        env::var("AIPM_API_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                env::var("AIPM_OPENAI_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| default_url.to_string())
+    };
+
+    let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
+        settings.timeout_secs
+    } else {
+        60
+    });
+
+    Some(LlmConfig {
+        provider,
+        api_url,
+        model,
+        api_key: key,
+        timeout,
+    })
+}
+
 impl AiRuntime {
     pub fn from_settings(settings: &AiSettings) -> Option<AiRuntime> {
-        if !settings.enabled {
-            return None;
-        }
-
-        let model = if !settings.model.trim().is_empty() {
-            settings.model.clone()
-        } else {
-            env::var("AIPM_MODEL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| {
-                    env::var("AIPM_OPENAI_MODEL")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                })
-                .unwrap_or_else(|| "claude-sonnet-4-5".to_string())
-        };
-
-        let provider = detect_provider(&model);
-
-        let settings_key = match provider {
-            Provider::Anthropic => &settings.anthropic_api_key,
-            Provider::OpenAi => &settings.openai_api_key,
-        };
-        let key = if !settings_key.trim().is_empty() {
-            settings_key.clone()
-        } else {
-            match provider {
-                Provider::Anthropic => env::var("ANTHROPIC_API_KEY").ok()?,
-                Provider::OpenAi => env::var("OPENAI_API_KEY").ok()?,
-            }
-        };
-
-        let default_url = match provider {
-            Provider::Anthropic => "https://api.anthropic.com/v1/messages",
-            Provider::OpenAi => "https://api.openai.com/v1/chat/completions",
-        };
-
-        let api_url = if !settings.api_url.trim().is_empty() {
-            // If the saved URL is a known default for the *other* provider, override it.
-            let saved = settings.api_url.trim();
-            if (provider == Provider::Anthropic
-                && saved == "https://api.openai.com/v1/chat/completions")
-                || (provider == Provider::OpenAi
-                    && saved == "https://api.anthropic.com/v1/messages")
-            {
-                default_url.to_string()
-            } else {
-                settings.api_url.clone()
-            }
-        } else {
-            env::var("AIPM_API_URL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| {
-                    env::var("AIPM_OPENAI_URL")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                })
-                .unwrap_or_else(|| default_url.to_string())
-        };
-
-        let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
-            settings.timeout_secs
-        } else {
-            60
-        });
-
-        let cfg = LlmConfig {
-            provider,
-            api_url,
-            model,
-            api_key: key,
-            timeout,
-        };
+        let cfg = build_config(settings)?;
 
         let (job_tx, job_rx) = mpsc::channel::<AiJob>();
         let (result_tx, result_rx) = mpsc::channel::<AiResult>();
@@ -1369,7 +1371,10 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
         - When updating a task with multiple items/links that map to sub-tasks, include them in the subtasks array.\n\
         - NEVER put sub-task breakdowns or numbered lists into the description field. Use the subtasks array.\n\
         - Subtasks inherit the parent task's bucket and priority unless specified otherwise.\n\
-        - For delete: just call delete_task with the target_id.";
+        - For delete: just call delete_task with the target_id.\n\
+        - When the user mentions a task (by name or reference) and follows with an instruction, \
+        assume the instruction applies to that task or its subtasks — use update_task or \
+        decompose_task targeting that task rather than creating something new.";
 
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
 
@@ -1582,4 +1587,111 @@ fn truncate(input: &str, max: usize) -> &str {
         return input;
     }
     &input[..max]
+}
+
+// ---------------------------------------------------------------------------
+// Vision / image ingestion
+// ---------------------------------------------------------------------------
+
+fn call_llm_with_image(
+    cfg: &LlmConfig,
+    system: &str,
+    user_text: &str,
+    image_base64: &str,
+    media_type: &str,
+) -> Result<String, String> {
+    let body = match cfg.provider {
+        Provider::OpenAi => json!({
+            "model": cfg.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", media_type, image_base64)
+                        }
+                    },
+                    {"type": "text", "text": user_text}
+                ]}
+            ]
+        }),
+        Provider::Anthropic => json!({
+            "model": cfg.model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [
+                {"role": "user", "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_base64
+                        }
+                    },
+                    {"type": "text", "text": user_text}
+                ]}
+            ]
+        }),
+    };
+
+    let text = with_retry(|attempt| {
+        let timeout = scaled_timeout(cfg.timeout, &body, attempt);
+        send_llm_request(cfg, &body, timeout)
+    })?;
+
+    match cfg.provider {
+        Provider::OpenAi => {
+            let chat: ChatResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            Ok(chat
+                .choices
+                .first()
+                .and_then(|c| c.message.content.as_deref())
+                .unwrap_or("")
+                .to_string())
+        }
+        Provider::Anthropic => {
+            let resp: AnthropicResponse = serde_json::from_str(&text)
+                .map_err(|err| format!("AI JSON parse failed: {err}"))?;
+            Ok(resp
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if b.block_type == "text" {
+                        b.text.as_deref()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(""))
+        }
+    }
+}
+
+pub fn extract_from_image(
+    settings: &AiSettings,
+    image_data: &[u8],
+    media_type: &str,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let cfg = build_config(settings)
+        .ok_or_else(|| "AI not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.".to_string())?;
+
+    let image_base64 = STANDARD.encode(image_data);
+
+    let system = "You are an expert at extracting actionable tasks from images. \
+        Analyze the image and identify all actionable items, tasks, to-dos, requests, or follow-ups.";
+
+    let user_text = "Extract all actionable tasks from this image. \
+        Return a concise natural language instruction that a project manager could execute \
+        to create these tasks. Include relevant details like due dates, priorities, and context. \
+        Do NOT return JSON. Return plain text instructions, e.g. \
+        'Create a high-priority task to complete 2025 Corporate Tax Form by Feb 28. \
+        Also create a task for 2025 DE Franchise Form.'";
+
+    call_llm_with_image(&cfg, system, user_text, &image_base64, media_type)
 }
