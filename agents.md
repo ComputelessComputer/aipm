@@ -8,6 +8,13 @@
 - If a task involves multiple steps, commit after each step — not all at the end.
 - Include `Co-Authored-By: Warp <agent@warp.dev>` at the end of every commit message.
 
+## Releases
+
+- When asked to create a release: bump the version in `Cargo.toml`, commit, push, then create the release with `gh release create`.
+- Releases must be published immediately — do **not** use `--draft`.
+- Include release notes with concise, descriptive bullet points explaining what changed (e.g. `- Add @ autocomplete dropdown for selecting tasks by ID or title`). Do not just list version numbers or raw commit messages.
+- Each bullet should describe the user-facing change, not implementation details.
+
 ## General
 
 - Run `cargo fmt` before committing to ensure consistent formatting.
