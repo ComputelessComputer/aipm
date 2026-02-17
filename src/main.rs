@@ -247,6 +247,8 @@ struct App {
     suggestions: Vec<Suggestion>,
     suggestions_selected: usize,
     suggestions_scroll: usize,
+
+    suggestions_rx: Option<mpsc::Receiver<Suggestion>>,
 }
 
 struct TerminalGuard;
@@ -265,6 +267,72 @@ impl Drop for TerminalGuard {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(stdout, Show, DisableBracketedPaste, LeaveAlternateScreen);
     }
+}
+
+fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<Suggestion> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        if !settings.mcp_enabled
+            || settings.mcp_python_path.trim().is_empty()
+            || settings.mcp_script_path.trim().is_empty()
+        {
+            return;
+        }
+
+        let client = match mcp::McpClient::spawn(
+            &settings.mcp_python_path,
+            &settings.mcp_script_path,
+        ) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+
+            let emails = match client.get_recent_emails(10) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for email in emails {
+                if email.is_read {
+                    continue;
+                }
+
+                let content = email.content.as_deref().unwrap_or("");
+                let filtered = match llm::filter_email_for_suggestions(
+                    &settings,
+                    &email.subject,
+                    &email.sender,
+                    content,
+                ) {
+                    Ok(Some(task)) => task,
+                    _ => continue,
+                };
+
+                let priority = match filtered.priority.to_ascii_lowercase().as_str() {
+                    "low" => Priority::Low,
+                    "medium" => Priority::Medium,
+                    "high" => Priority::High,
+                    "critical" => Priority::Critical,
+                    _ => Priority::Medium,
+                };
+
+                let suggestion = Suggestion {
+                    id: uuid::Uuid::new_v4(),
+                    email_id: email.id.clone(),
+                    title: filtered.title,
+                    description: filtered.description,
+                    priority,
+                    created_at: chrono::Utc::now(),
+                };
+
+                let _ = tx.send(suggestion);
+            }
+        }
+    });
+    rx
 }
 
 fn spawn_update_check() -> mpsc::Receiver<String> {
@@ -390,9 +458,11 @@ fn main() -> io::Result<()> {
         suggestions: Vec::new(),
         suggestions_selected: 0,
         suggestions_scroll: 0,
+        suggestions_rx: None,
     };
 
     app.update_rx = Some(spawn_update_check());
+    app.suggestions_rx = Some(spawn_mcp_poller(app.settings.clone()));
 
     ensure_default_selection(&mut app);
 
@@ -410,6 +480,10 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
 
     loop {
         if poll_ai(app) {
+            needs_redraw = true;
+        }
+
+        if poll_suggestions(app) {
             needs_redraw = true;
         }
 
@@ -3317,6 +3391,19 @@ fn poll_ai(app: &mut App) -> bool {
     }
 
     true
+}
+
+fn poll_suggestions(app: &mut App) -> bool {
+    let mut has_new = false;
+    if let Some(rx) = &app.suggestions_rx {
+        while let Ok(suggestion) = rx.try_recv() {
+            if !app.suggestions.iter().any(|s| s.email_id == suggestion.email_id) {
+                app.suggestions.push(suggestion);
+                has_new = true;
+            }
+        }
+    }
+    has_new
 }
 
 /// Apply a TaskUpdate to a task, returning true if anything changed.

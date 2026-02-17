@@ -1695,3 +1695,61 @@ pub fn extract_from_image(
 
     call_llm_with_image(&cfg, system, user_text, &image_base64, media_type)
 }
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct SuggestedTask {
+    pub title: String,
+    pub description: String,
+    pub priority: String,
+}
+
+pub fn filter_email_for_suggestions(
+    settings: &AiSettings,
+    subject: &str,
+    sender: &str,
+    content: &str,
+) -> Result<Option<SuggestedTask>, String> {
+    let cfg = build_config(settings).ok_or_else(|| {
+        "AI not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.".to_string()
+    })?;
+
+    let system = "You are an AI assistant that filters emails to identify actionable tasks. \
+        Your job is to determine if an email contains something the user needs to act on. \
+        Ignore: newsletters, marketing, promotional emails, automated reports, spam. \
+        Look for: requests, deadlines, follow-ups, meeting invitations, pending items.";
+
+    let user = format!(
+        "Analyze this email and determine if it requires action.\n\n\
+        From: {}\nSubject: {}\n\n{}\n\n\
+        If this email requires action, respond with JSON: {{\"actionable\": true, \"title\": \"short task title\", \"description\": \"brief summary\", \"priority\": \"Low|Medium|High|Critical\"}}\n\
+        If NOT actionable (newsletter, spam, marketing, etc.), respond with: {{\"actionable\": false}}",
+        sender, subject, truncate(content, 800)
+    );
+
+    let response = call_llm(&cfg, system, &user)?;
+    let json_text = extract_json_object(&response).unwrap_or_else(|| response.trim().to_string());
+
+    #[derive(serde::Deserialize)]
+    struct FilterResponse {
+        actionable: bool,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        priority: Option<String>,
+    }
+
+    let parsed: FilterResponse = serde_json::from_str(&json_text)
+        .map_err(|e| format!("Failed to parse filter response: {e}"))?;
+
+    if !parsed.actionable {
+        return Ok(None);
+    }
+
+    Ok(Some(SuggestedTask {
+        title: parsed.title.unwrap_or_else(|| subject.to_string()),
+        description: parsed.description.unwrap_or_else(|| format!("From: {}", sender)),
+        priority: parsed.priority.unwrap_or_else(|| "Medium".to_string()),
+    }))
+}
