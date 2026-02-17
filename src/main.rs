@@ -24,7 +24,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{children_of, compute_parent_progress, Priority, Progress, Task};
+use crate::model::{children_of, compute_parent_progress, Priority, Progress, Suggestion, Task};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +33,7 @@ enum Tab {
     Timeline,
     Kanban,
     Settings,
+    Suggestions,
 }
 
 const MODEL_OPTIONS: &[&str] = &[
@@ -52,16 +53,18 @@ impl Tab {
             Tab::Default => Tab::Timeline,
             Tab::Timeline => Tab::Kanban,
             Tab::Kanban => Tab::Settings,
-            Tab::Settings => Tab::Default,
+            Tab::Settings => Tab::Suggestions,
+            Tab::Suggestions => Tab::Default,
         }
     }
 
     fn prev(self) -> Tab {
         match self {
-            Tab::Default => Tab::Settings,
+            Tab::Default => Tab::Suggestions,
             Tab::Timeline => Tab::Default,
             Tab::Kanban => Tab::Timeline,
             Tab::Settings => Tab::Kanban,
+            Tab::Suggestions => Tab::Settings,
         }
     }
 }
@@ -240,6 +243,10 @@ struct App {
     at_autocomplete_selected: usize,
 
     update_rx: Option<mpsc::Receiver<String>>,
+
+    suggestions: Vec<Suggestion>,
+    suggestions_selected: usize,
+    suggestions_scroll: usize,
 }
 
 struct TerminalGuard;
@@ -380,6 +387,9 @@ fn main() -> io::Result<()> {
         input_saved: String::new(),
         at_autocomplete_selected: 0,
         update_rx: None,
+        suggestions: Vec::new(),
+        suggestions_selected: 0,
+        suggestions_scroll: 0,
     };
 
     app.update_rx = Some(spawn_update_check());
@@ -584,6 +594,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.status = None;
                 return Ok(false);
             }
+            KeyCode::Char('0') => {
+                app.tab = Tab::Suggestions;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
             _ => {}
         }
     }
@@ -593,6 +609,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         Tab::Timeline => handle_timeline_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
         Tab::Settings => handle_settings_key(app, key),
+        Tab::Suggestions => handle_suggestions_key(app, key),
     }
 }
 
@@ -630,6 +647,11 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = Tab::Settings;
             app.focus = Focus::Board;
             app.settings_editing = false;
+            app.status = None;
+        }
+        KeyCode::Char('0') => {
+            app.tab = Tab::Suggestions;
+            app.focus = Focus::Board;
             app.status = None;
         }
         _ => {}
@@ -2744,6 +2766,72 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     Ok(false)
 }
 
+fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+            return Ok(false);
+        }
+        KeyCode::Char('i') => {
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            return Ok(false);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.suggestions.is_empty() {
+                return Ok(false);
+            }
+            if app.suggestions_selected == 0 {
+                app.suggestions_selected = app.suggestions.len() - 1;
+            } else {
+                app.suggestions_selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.suggestions.is_empty() {
+                return Ok(false);
+            }
+            app.suggestions_selected = (app.suggestions_selected + 1) % app.suggestions.len();
+        }
+        KeyCode::Enter => {
+            if let Some(suggestion) = app.suggestions.get(app.suggestions_selected).cloned() {
+                let now = Utc::now();
+                let mut task = Task::new(
+                    default_bucket_name(&app.settings),
+                    suggestion.title.clone(),
+                    now,
+                );
+                task.description = suggestion.description;
+                task.priority = suggestion.priority;
+                task.progress = Progress::Backlog;
+                app.tasks.push(task);
+                app.suggestions.remove(app.suggestions_selected);
+                if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
+                {
+                    app.suggestions_selected = app.suggestions.len() - 1;
+                }
+                persist(app);
+                app.status = Some((
+                    "Task created from suggestion".to_string(),
+                    Instant::now(),
+                    false,
+                ));
+            }
+        }
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
+            if !app.suggestions.is_empty() && app.suggestions_selected < app.suggestions.len() {
+                app.suggestions.remove(app.suggestions_selected);
+                if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
+                {
+                    app.suggestions_selected = app.suggestions.len() - 1;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 fn poll_ai(app: &mut App) -> bool {
     let results = match &app.ai {
         Some(ai) => ai.drain(),
@@ -3692,6 +3780,7 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
         Tab::Timeline => render_timeline_tab(stdout, app, cols, rows)?,
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
         Tab::Settings => render_settings_tab(stdout, app, cols, rows)?,
+        Tab::Suggestions => render_suggestions_tab(stdout, app, cols, rows)?,
     }
 
     if app.bucket_edit_active {
@@ -3725,6 +3814,7 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
         (Tab::Timeline, "2 Timeline"),
         (Tab::Kanban, "3 Kanban"),
         (Tab::Settings, "4 Settings"),
+        (Tab::Suggestions, "0 Suggestions"),
     ]
     .iter()
     {
@@ -5080,6 +5170,95 @@ fn mask_api_key(key: &str) -> String {
     }
     let visible = &key[key.len() - 4..];
     format!("\u{2022}\u{2022}\u{2022}\u{2022}{}", visible)
+}
+
+fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let (x_margin, _) = choose_layout(width, 1);
+    let x = x_margin as u16;
+    let content_width = width.saturating_sub(x_margin * 2);
+    let y_help = rows.saturating_sub(1);
+
+    queue!(
+        stdout,
+        MoveTo(x, 3),
+        SetAttribute(Attribute::Bold),
+        Print(" Email Suggestions"),
+        SetAttribute(Attribute::Reset)
+    )?;
+
+    if app.suggestions.is_empty() {
+        queue!(
+            stdout,
+            MoveTo(x, 5),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" No suggestions yet."),
+            ResetColor
+        )?;
+    } else {
+        for (i, suggestion) in app.suggestions.iter().enumerate() {
+            let y = 5 + (i * 4) as u16;
+            let is_selected = i == app.suggestions_selected;
+
+            let priority_bullet = match suggestion.priority {
+                Priority::Critical => "\u{25c9}",
+                Priority::High => "\u{25cf}",
+                Priority::Medium => "\u{25cb}",
+                Priority::Low => "\u{00b7}",
+            };
+
+            let priority_color = priority_color(suggestion.priority);
+
+            queue!(stdout, MoveTo(x, y))?;
+            if is_selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White),
+                    Print(pad_to_width(
+                        &clamp_text(
+                            &format!(" {} {}", priority_bullet, suggestion.title),
+                            content_width
+                        ),
+                        content_width
+                    )),
+                    ResetColor
+                )?;
+            } else {
+                queue!(
+                    stdout,
+                    SetForegroundColor(priority_color),
+                    Print(format!(" {} ", priority_bullet)),
+                    ResetColor,
+                    Print(clamp_text(
+                        &suggestion.title,
+                        content_width.saturating_sub(4)
+                    ))
+                )?;
+            }
+
+            queue!(
+                stdout,
+                MoveTo(x, y + 1),
+                SetForegroundColor(Color::DarkGrey),
+                Print(format!(
+                    "   {}",
+                    clamp_text(&suggestion.description, content_width.saturating_sub(3))
+                )),
+                ResetColor
+            )?;
+        }
+    }
+
+    queue!(
+        stdout,
+        MoveTo(x, y_help),
+        SetForegroundColor(Color::DarkGrey),
+        Print("\u{2191}/\u{2193} navigate \u{2022} enter create task \u{2022} d/x dismiss \u{2022} q quit"),
+        ResetColor
+    )?;
+
+    Ok(())
 }
 
 fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
