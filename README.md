@@ -62,6 +62,30 @@ export OPENAI_API_KEY="sk-..."           # for OpenAI models
 
 Or configure it in the Settings tab (`4`) within the app. The default model is `claude-sonnet-4-5`.
 
+## CLI commands
+
+All subcommands output JSON to stdout. Errors go to stderr with a non-zero exit code.
+Task IDs accept short prefixes (4+ hex chars), e.g. `36149d52` or `3614`.
+
+### Task commands
+
+- `aipm task list` — JSON array of all tasks.
+- `aipm task show <id>` — single task as JSON.
+- `aipm task add --title "X" --bucket "Y"` — create a task. Optional flags: `--priority low|medium|high|critical`, `--progress backlog|todo|in-progress|done`, `--due YYYY-MM-DD`, `--description "..."`, `--parent <id>` (for sub-tasks). Prints the created task as JSON.
+- `aipm task edit <id>` — update a task. Pass any combination of: `--title`, `--bucket`, `--description`, `--priority`, `--progress`, `--due` (use `none` to clear). Prints the updated task as JSON.
+- `aipm task delete <id>` — delete a task and all its sub-tasks. Prints confirmation JSON.
+
+### Bucket commands
+
+- `aipm bucket list` — JSON array of all buckets.
+- `aipm bucket add <name>` — add a bucket. Optional: `--description "..."`.
+- `aipm bucket rename <old> <new>` — rename a bucket and update all tasks in it.
+- `aipm bucket delete <name>` — delete a bucket; tasks move to the first remaining bucket.
+
+### AI commands (headless)
+
+- `aipm "<instruction>"` — send a natural-language instruction to AI for triage (create/update/delete tasks). Requires an API key.
+
 ## AI tools
 
 The AI agent uses tool calling to decide how to handle each input. Available tools:
