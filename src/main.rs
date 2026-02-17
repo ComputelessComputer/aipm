@@ -5031,8 +5031,19 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
             )?;
             y_cursor += 1;
 
-            // Child lines.
-            for (ci, &child_idx) in child_indices.iter().enumerate().take(5) {
+            // Child lines with scrolling.
+            let max_visible = 5;
+            let scroll_off = if sub_sel >= max_visible {
+                sub_sel - max_visible + 1
+            } else {
+                0
+            };
+            for (ci, &child_idx) in child_indices
+                .iter()
+                .enumerate()
+                .skip(scroll_off)
+                .take(max_visible)
+            {
                 let child = &app.tasks[child_idx];
                 let is_sel = is_current && ci == sub_sel;
                 let icon = match child.progress {
