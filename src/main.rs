@@ -1,4 +1,5 @@
 mod ai;
+mod cli;
 mod llm;
 mod model;
 mod storage;
@@ -260,6 +261,11 @@ fn main() -> io::Result<()> {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("aipm {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+
+    // CLI subcommands: task, bucket.
+    if let Some(result) = cli::run_subcommand(&args) {
+        return result;
     }
 
     // CLI mode: `aipm "break down all tickets"` — headless AI, no TUI.
@@ -5820,31 +5826,43 @@ fn print_help() {
     println!("Usage:");
     println!("  aipm                            Open the interactive TUI");
     println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
+    println!("  aipm task <command>              Task CRUD (see below)");
+    println!("  aipm bucket <command>            Bucket CRUD (see below)");
     println!("  aipm --help");
     println!("  aipm --version");
     println!();
-    println!("CLI examples:");
+    println!("Task commands (output JSON):");
+    println!("  aipm task list                   List all tasks");
+    println!("  aipm task show <id>              Show a single task");
+    println!(
+        "  aipm task add --title \"X\" [--bucket \"Y\"] [--priority low|medium|high|critical]"
+    );
+    println!("      [--progress backlog|todo|in-progress|done] [--due YYYY-MM-DD]");
+    println!("      [--description \"...\"] [--parent <id>]");
+    println!("  aipm task edit <id> [--title \"X\"] [--bucket \"Y\"] [--priority ...]");
+    println!("      [--progress ...] [--due YYYY-MM-DD|none] [--description \"...\"]");
+    println!("  aipm task delete <id>            Delete task and its sub-tasks");
+    println!();
+    println!("Bucket commands (output JSON):");
+    println!("  aipm bucket list                 List all buckets");
+    println!("  aipm bucket add <name> [--description \"...\"]");
+    println!("  aipm bucket rename <old> <new>");
+    println!("  aipm bucket delete <name>        Moves tasks to first remaining bucket");
+    println!();
+    println!("AI examples:");
     println!("  aipm \"break down all tickets into sub-issues\"");
     println!("  aipm \"mark the onboarding task as done\"");
     println!("  aipm \"create a task to set up CI/CD pipeline\"");
     println!();
-    println!("New task input (tab 1):");
+    println!("TUI input (tab 1):");
     println!("  <text>                  (AI routes into your configured buckets)");
-    println!("  <bucket>: <text>         (force a specific bucket)");
-    println!("  due:YYYY-MM-DD           (set due date, e.g. due:2026-02-20)");
-    println!("  p:low|medium|high|critical (set priority, e.g. p:high)");
     println!("  @<id> <instruction>      (AI-edit a specific task by ID prefix)");
     println!("  /clear                   (clear AI conversation context)");
     println!("  /exit                    (quit the app)");
     println!();
-    println!("AI:");
-    println!("  Supports OpenAI and Anthropic models. Set the appropriate API key to enable.");
+    println!("Environment:");
     println!("  OPENAI_API_KEY=...                (for gpt-* models)");
     println!("  ANTHROPIC_API_KEY=...             (for claude-* models)");
-    println!("  AIPM_MODEL=...                    (default: gpt-5.2-chat-latest)");
-    println!("  AIPM_API_URL=...                  (auto-detected from model)");
-    println!();
-    println!("Data:");
-    println!("  Stored as individual markdown files in $AIPM_DATA_DIR/tasks/ if set,");
-    println!("  otherwise in your OS data dir. Each task is a .md file with YAML front matter.");
+    println!("  AIPM_MODEL=...                    (default: claude-sonnet-4-5)");
+    println!("  AIPM_DATA_DIR=...                 (override data directory)");
 }
