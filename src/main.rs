@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+    },
     execute, queue,
     style::{
         Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
@@ -244,7 +246,7 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter(stdout: &mut Stdout) -> io::Result<TerminalGuard> {
         terminal::enable_raw_mode()?;
-        execute!(stdout, EnterAlternateScreen, Hide)?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
         Ok(TerminalGuard)
     }
 }
@@ -253,7 +255,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(stdout, Show, LeaveAlternateScreen);
+        let _ = execute!(stdout, Show, DisableBracketedPaste, LeaveAlternateScreen);
     }
 }
 
@@ -455,6 +457,10 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
                         needs_clear = true;
                     }
                 }
+                Event::Paste(text) => {
+                    handle_paste(app, &text);
+                    needs_redraw = true;
+                }
                 Event::Resize(_, _) => {
                     needs_redraw = true;
                     needs_clear = true;
@@ -465,6 +471,44 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_paste(app: &mut App, text: &str) {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+
+    if app.focus == Focus::Edit && app.editing_text {
+        let byte_pos = app
+            .edit_buf
+            .char_indices()
+            .nth(app.edit_buf_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(app.edit_buf.len());
+        app.edit_buf.insert_str(byte_pos, &cleaned);
+        app.edit_buf_cursor += cleaned.chars().count();
+    } else if app.bucket_edit_active && app.bucket_editing_text {
+        let byte_pos = app
+            .bucket_edit_buf
+            .char_indices()
+            .nth(app.bucket_edit_buf_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(app.bucket_edit_buf.len());
+        app.bucket_edit_buf.insert_str(byte_pos, &cleaned);
+        app.bucket_edit_buf_cursor += cleaned.chars().count();
+    } else if app.tab == Tab::Settings && app.settings_editing {
+        app.settings_buf.push_str(&cleaned);
+    } else if app.focus == Focus::Input {
+        let byte_pos = app
+            .input
+            .char_indices()
+            .nth(app.input_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(app.input.len());
+        app.input.insert_str(byte_pos, &cleaned);
+        app.input_cursor += cleaned.chars().count();
+    }
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
