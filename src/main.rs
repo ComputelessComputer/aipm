@@ -200,6 +200,7 @@ struct App {
     edit_task_id: Option<Uuid>,
     edit_field: EditField,
     edit_buf: String,
+    edit_buf_cursor: usize,
     editing_text: bool,
     edit_sub_selected: usize,
     edit_parent_stack: Vec<(Uuid, EditField, usize)>,
@@ -217,6 +218,7 @@ struct App {
     bucket_edit_active: bool,
     bucket_edit_field: BucketEditField,
     bucket_edit_buf: String,
+    bucket_edit_buf_cursor: usize,
     bucket_editing_text: bool,
 
     settings: AiSettings,
@@ -311,6 +313,7 @@ fn main() -> io::Result<()> {
         edit_task_id: None,
         edit_field: EditField::Title,
         edit_buf: String::new(),
+        edit_buf_cursor: 0,
         editing_text: false,
         edit_sub_selected: 0,
         edit_parent_stack: Vec::new(),
@@ -324,6 +327,7 @@ fn main() -> io::Result<()> {
         bucket_edit_active: false,
         bucket_edit_field: BucketEditField::Name,
         bucket_edit_buf: String::new(),
+        bucket_edit_buf_cursor: 0,
         bucket_editing_text: false,
         settings,
         settings_field: SettingsField::AiEnabled,
@@ -1481,6 +1485,7 @@ fn open_bucket_edit(app: &mut App) {
     let bucket = &app.settings.buckets[app.selected_bucket];
     app.bucket_edit_field = BucketEditField::Name;
     app.bucket_edit_buf = bucket.name.clone();
+    app.bucket_edit_buf_cursor = app.bucket_edit_buf.chars().count();
     app.bucket_editing_text = false;
     app.bucket_edit_active = true;
 }
@@ -1489,7 +1494,6 @@ fn handle_bucket_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     if app.bucket_editing_text {
         match key.code {
             KeyCode::Esc => {
-                // Cancel text editing, reload original value.
                 load_bucket_edit_buf(app);
                 app.bucket_editing_text = false;
             }
@@ -1498,11 +1502,93 @@ fn handle_bucket_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.bucket_editing_text = false;
             }
             KeyCode::Backspace => {
-                app.bucket_edit_buf.pop();
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                    app.bucket_edit_buf.drain(..bp);
+                    app.bucket_edit_buf_cursor = 0;
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    while app.bucket_edit_buf_cursor > 0 {
+                        let bp =
+                            char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor - 1);
+                        if !app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.bucket_edit_buf.remove(bp);
+                        app.bucket_edit_buf_cursor -= 1;
+                    }
+                    while app.bucket_edit_buf_cursor > 0 {
+                        let bp =
+                            char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor - 1);
+                        if app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.bucket_edit_buf.remove(bp);
+                        app.bucket_edit_buf_cursor -= 1;
+                    }
+                } else if app.bucket_edit_buf_cursor > 0 {
+                    let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor - 1);
+                    app.bucket_edit_buf.remove(bp);
+                    app.bucket_edit_buf_cursor -= 1;
+                }
+            }
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    app.bucket_edit_buf_cursor = 0;
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    while app.bucket_edit_buf_cursor > 0 {
+                        let prev = app.bucket_edit_buf_cursor - 1;
+                        let bp = char_byte_pos(&app.bucket_edit_buf, prev);
+                        if !app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.bucket_edit_buf_cursor = prev;
+                    }
+                    while app.bucket_edit_buf_cursor > 0 {
+                        let prev = app.bucket_edit_buf_cursor - 1;
+                        let bp = char_byte_pos(&app.bucket_edit_buf, prev);
+                        if app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.bucket_edit_buf_cursor = prev;
+                    }
+                } else if app.bucket_edit_buf_cursor > 0 {
+                    app.bucket_edit_buf_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let len = app.bucket_edit_buf.chars().count();
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    app.bucket_edit_buf_cursor = len;
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    while app.bucket_edit_buf_cursor < len {
+                        let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                        app.bucket_edit_buf_cursor += 1;
+                        if app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                    }
+                    while app.bucket_edit_buf_cursor < len {
+                        let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                        if app.bucket_edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.bucket_edit_buf_cursor += 1;
+                    }
+                } else if app.bucket_edit_buf_cursor < len {
+                    app.bucket_edit_buf_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                app.bucket_edit_buf_cursor = 0;
+            }
+            KeyCode::End => {
+                app.bucket_edit_buf_cursor = app.bucket_edit_buf.chars().count();
             }
             KeyCode::Char(ch) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.bucket_edit_buf.push(ch);
+                    let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                    app.bucket_edit_buf.insert(bp, ch);
+                    app.bucket_edit_buf_cursor += 1;
                 }
             }
             _ => {}
@@ -1543,6 +1629,7 @@ fn load_bucket_edit_buf(app: &mut App) {
             BucketEditField::Name => bucket.name.clone(),
             BucketEditField::Description => bucket.description.clone().unwrap_or_default(),
         };
+        app.bucket_edit_buf_cursor = app.bucket_edit_buf.chars().count();
     }
 }
 
@@ -1592,6 +1679,7 @@ fn open_edit_for(app: &mut App, task_id: Uuid) {
     app.edit_task_id = Some(task_id);
     app.edit_field = EditField::Title;
     app.edit_buf = task.title.clone();
+    app.edit_buf_cursor = app.edit_buf.chars().count();
     app.editing_text = false;
     app.edit_sub_selected = 0;
     app.edit_parent_stack.clear();
@@ -1660,6 +1748,7 @@ fn load_edit_buf(app: &mut App) {
             .unwrap_or_default(),
         EditField::SubIssues => String::new(),
     };
+    app.edit_buf_cursor = app.edit_buf.chars().count();
 }
 
 fn commit_edit_buf(app: &mut App) {
@@ -1804,26 +1893,90 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             KeyCode::Backspace => {
                 if key.modifiers.contains(KeyModifiers::SUPER) {
-                    // Cmd+Backspace: delete to start of line.
-                    app.edit_buf.clear();
+                    let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                    app.edit_buf.drain(..bp);
+                    app.edit_buf_cursor = 0;
                 } else if key.modifiers.contains(KeyModifiers::ALT) {
-                    // Option+Backspace: delete word before cursor.
-                    while app.edit_buf.ends_with(' ') {
-                        app.edit_buf.pop();
-                    }
-                    while let Some(ch) = app.edit_buf.chars().last() {
-                        if ch == ' ' {
+                    while app.edit_buf_cursor > 0 {
+                        let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor - 1);
+                        if !app.edit_buf[bp..].starts_with(' ') {
                             break;
                         }
-                        app.edit_buf.pop();
+                        app.edit_buf.remove(bp);
+                        app.edit_buf_cursor -= 1;
                     }
-                } else {
-                    app.edit_buf.pop();
+                    while app.edit_buf_cursor > 0 {
+                        let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor - 1);
+                        if app.edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.edit_buf.remove(bp);
+                        app.edit_buf_cursor -= 1;
+                    }
+                } else if app.edit_buf_cursor > 0 {
+                    let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor - 1);
+                    app.edit_buf.remove(bp);
+                    app.edit_buf_cursor -= 1;
                 }
+            }
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    app.edit_buf_cursor = 0;
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    while app.edit_buf_cursor > 0 {
+                        let prev = app.edit_buf_cursor - 1;
+                        let bp = char_byte_pos(&app.edit_buf, prev);
+                        if !app.edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.edit_buf_cursor = prev;
+                    }
+                    while app.edit_buf_cursor > 0 {
+                        let prev = app.edit_buf_cursor - 1;
+                        let bp = char_byte_pos(&app.edit_buf, prev);
+                        if app.edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.edit_buf_cursor = prev;
+                    }
+                } else if app.edit_buf_cursor > 0 {
+                    app.edit_buf_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let len = app.edit_buf.chars().count();
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    app.edit_buf_cursor = len;
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    while app.edit_buf_cursor < len {
+                        let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                        app.edit_buf_cursor += 1;
+                        if app.edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                    }
+                    while app.edit_buf_cursor < len {
+                        let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                        if app.edit_buf[bp..].starts_with(' ') {
+                            break;
+                        }
+                        app.edit_buf_cursor += 1;
+                    }
+                } else if app.edit_buf_cursor < len {
+                    app.edit_buf_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                app.edit_buf_cursor = 0;
+            }
+            KeyCode::End => {
+                app.edit_buf_cursor = app.edit_buf.chars().count();
             }
             KeyCode::Char(ch) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.edit_buf.push(ch);
+                    let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                    app.edit_buf.insert(bp, ch);
+                    app.edit_buf_cursor += 1;
                 }
             }
             _ => {}
@@ -1951,6 +2104,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     app.edit_task_id = Some(child_id);
                     app.edit_field = EditField::Title;
                     app.edit_buf = "New sub-issue".to_string();
+                    app.edit_buf_cursor = app.edit_buf.chars().count();
                     app.editing_text = true;
                     app.edit_sub_selected = 0;
                 }
@@ -4770,14 +4924,30 @@ fn render_bucket_edit_overlay(
         return Ok(());
     };
 
-    let box_width = (cols as usize).clamp(30, 50);
+    let box_width = (cols as usize).clamp(40, 60);
     let label_w = 14usize;
     let value_w = box_width.saturating_sub(label_w + 4);
-    let box_height = 7u16;
+
+    let desc_text = bucket.description.clone().unwrap_or_default();
+    let desc_editing =
+        app.bucket_edit_field == BucketEditField::Description && app.bucket_editing_text;
+    let max_desc_lines = 4usize;
+    let desc_wrapped = if desc_editing {
+        None
+    } else {
+        let display = if desc_text.is_empty() {
+            "\u{2014}".to_string()
+        } else {
+            desc_text.clone()
+        };
+        Some(wrap_text(&display, value_w, max_desc_lines))
+    };
+    let desc_lines = desc_wrapped.as_ref().map(|w| w.len()).unwrap_or(1).max(1);
+
+    let box_height = (desc_lines as u16 + 6).min(rows.saturating_sub(2));
     let x0 = (cols.saturating_sub(box_width as u16)) / 2;
     let y0 = (rows.saturating_sub(box_height)) / 2;
 
-    // Clear overlay area.
     for dy in 0..box_height {
         queue!(
             stdout,
@@ -4786,7 +4956,6 @@ fn render_bucket_edit_overlay(
         )?;
     }
 
-    // Border top.
     let border_fill: String = "\u{2500}".repeat(box_width.saturating_sub(16));
     queue!(
         stdout,
@@ -4802,38 +4971,21 @@ fn render_bucket_edit_overlay(
     let inner_x = x0 + 2;
     let inner_w = box_width.saturating_sub(4);
 
-    // Fields: Name and Description.
-    for (i, (field, label)) in [
-        (BucketEditField::Name, "Name"),
-        (BucketEditField::Description, "Desc"),
-    ]
-    .iter()
-    .enumerate()
+    let mut y_cursor = y0 + 2;
+
+    // Name field.
     {
-        let y_line = y0 + 2 + i as u16;
-        let is_current = *field == app.bucket_edit_field;
-
+        let is_current = app.bucket_edit_field == BucketEditField::Name;
         let value = if is_current && app.bucket_editing_text {
-            format!("{}\u{258f}", app.bucket_edit_buf)
-        } else if is_current {
-            match field {
-                BucketEditField::Name => bucket.name.clone(),
-                BucketEditField::Description => bucket.description.clone().unwrap_or_default(),
-            }
+            let (visible, _) =
+                input_visible_window(&app.bucket_edit_buf, app.bucket_edit_buf_cursor, value_w);
+            visible
         } else {
-            match field {
-                BucketEditField::Name => bucket.name.clone(),
-                BucketEditField::Description => bucket
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| "\u{2014}".to_string()),
-            }
+            bucket.name.clone()
         };
-
-        let label_str = format!("{:<width$}", label, width = label_w);
+        let label_str = format!("{:<width$}", "Name", width = label_w);
         let row_text = format!("{}{}", label_str, clamp_text(&value, value_w));
-
-        queue!(stdout, MoveTo(inner_x, y_line))?;
+        queue!(stdout, MoveTo(inner_x, y_cursor))?;
         if is_current {
             queue!(
                 stdout,
@@ -4850,9 +5002,55 @@ fn render_bucket_edit_overlay(
                 ResetColor
             )?;
         }
+        y_cursor += 1;
     }
 
-    // Help line.
+    // Description field.
+    {
+        let is_current = app.bucket_edit_field == BucketEditField::Description;
+        let label = format!("{:<width$}", "Desc", width = label_w);
+        if desc_editing {
+            let (visible, _) =
+                input_visible_window(&app.bucket_edit_buf, app.bucket_edit_buf_cursor, value_w);
+            let row_text = format!("{}{}", label, clamp_text(&visible, value_w));
+            queue!(stdout, MoveTo(inner_x, y_cursor))?;
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                ResetColor
+            )?;
+            y_cursor += 1;
+        } else if let Some(ref wrapped) = desc_wrapped {
+            for (li, line) in wrapped.iter().enumerate() {
+                queue!(stdout, MoveTo(inner_x, y_cursor))?;
+                if is_current {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::White)
+                    )?;
+                } else {
+                    queue!(stdout, SetForegroundColor(Color::White))?;
+                }
+                let prefix = if li == 0 {
+                    &label
+                } else {
+                    &" ".repeat(label_w)
+                };
+                let row_text = format!("{}{}", prefix, clamp_text(line, value_w));
+                queue!(
+                    stdout,
+                    Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                    ResetColor
+                )?;
+                y_cursor += 1;
+            }
+        }
+    }
+    let _ = y_cursor;
+
     let help = if app.bucket_editing_text {
         "enter save \u{2022} esc cancel"
     } else {
@@ -4866,19 +5064,17 @@ fn render_bucket_edit_overlay(
         ResetColor
     )?;
 
-    // Show cursor when editing text.
     if app.bucket_editing_text {
-        let cursor_x = inner_x as usize + label_w + app.bucket_edit_buf.width();
+        let cy = match app.bucket_edit_field {
+            BucketEditField::Name => y0 + 2,
+            BucketEditField::Description => y0 + 3,
+        };
+        let (_, cursor_vis_x) =
+            input_visible_window(&app.bucket_edit_buf, app.bucket_edit_buf_cursor, value_w);
+        let cx = inner_x as usize + label_w + cursor_vis_x;
         queue!(
             stdout,
-            MoveTo(
-                (cursor_x as u16).min(cols.saturating_sub(1)),
-                y0 + 2
-                    + match app.bucket_edit_field {
-                        BucketEditField::Name => 0,
-                        BucketEditField::Description => 1,
-                    }
-            ),
+            MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
             Show
         )?;
     } else {
@@ -4907,15 +5103,13 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         task.description.clone()
     };
     let desc_editing = app.edit_field == EditField::Description && app.editing_text;
-    let desc_display = if desc_editing {
-        format!("{}▏", app.edit_buf)
-    } else {
-        desc_text.clone()
-    };
     let max_desc_lines = 6usize;
-    let desc_wrapped = wrap_text(&desc_display, value_w, max_desc_lines);
-    let desc_lines = desc_wrapped.len().max(1);
-    let _desc_extra = desc_lines.saturating_sub(1) as u16;
+    let desc_wrapped = if desc_editing {
+        None
+    } else {
+        Some(wrap_text(&desc_text, value_w, max_desc_lines))
+    };
+    let desc_lines = desc_wrapped.as_ref().map(|w| w.len()).unwrap_or(1).max(1);
 
     // Sub-issues section.
     let child_indices = children_of(&app.tasks, task.id);
@@ -4959,31 +5153,45 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         let is_current = *field == app.edit_field;
 
         if *field == EditField::Description {
-            // Render description as multi-line.
             let label = format!("{:<width$}", field.label(), width = label_w);
-            for (li, line) in desc_wrapped.iter().enumerate() {
+            if desc_editing {
+                let (visible, _) =
+                    input_visible_window(&app.edit_buf, app.edit_buf_cursor, value_w);
+                let row_text = format!("{}{}", label, clamp_text(&visible, value_w));
                 queue!(stdout, MoveTo(inner_x, y_cursor))?;
-                if is_current {
-                    queue!(
-                        stdout,
-                        SetForegroundColor(Color::Black),
-                        SetBackgroundColor(Color::White)
-                    )?;
-                } else {
-                    queue!(stdout, SetForegroundColor(Color::White))?;
-                }
-                let prefix = if li == 0 {
-                    &label
-                } else {
-                    &" ".repeat(label_w)
-                };
-                let row_text = format!("{}{}", prefix, clamp_text(line, value_w));
                 queue!(
                     stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White),
                     Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
                     ResetColor
                 )?;
                 y_cursor += 1;
+            } else if let Some(ref wrapped) = desc_wrapped {
+                for (li, line) in wrapped.iter().enumerate() {
+                    queue!(stdout, MoveTo(inner_x, y_cursor))?;
+                    if is_current {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::White)
+                        )?;
+                    } else {
+                        queue!(stdout, SetForegroundColor(Color::White))?;
+                    }
+                    let prefix = if li == 0 {
+                        &label
+                    } else {
+                        &" ".repeat(label_w)
+                    };
+                    let row_text = format!("{}{}", prefix, clamp_text(line, value_w));
+                    queue!(
+                        stdout,
+                        Print(pad_to_width(&clamp_text(&row_text, inner_w), inner_w)),
+                        ResetColor
+                    )?;
+                    y_cursor += 1;
+                }
             }
             continue;
         }
@@ -5095,7 +5303,8 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         };
 
         let show_value = if is_current && app.editing_text {
-            format!("{}▏", app.edit_buf)
+            let (visible, _) = input_visible_window(&app.edit_buf, app.edit_buf_cursor, value_w);
+            visible
         } else if is_current
             && matches!(
                 field,
@@ -5145,9 +5354,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         ResetColor
     )?;
 
-    // Cursor in text editing mode.
     if app.editing_text {
-        // Compute y position for the current field.
         let mut cy = y0 + 2;
         for field in EditField::ALL.iter() {
             if *field == app.edit_field {
@@ -5161,24 +5368,13 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 cy += 1;
             }
         }
-        // For description, cursor goes on the last wrapped line.
-        if app.edit_field == EditField::Description {
-            cy += desc_lines.saturating_sub(1) as u16;
-            let last_line_w = desc_wrapped.last().map(|s| s.width()).unwrap_or(0);
-            let cx = inner_x as usize + label_w + last_line_w;
-            queue!(
-                stdout,
-                MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
-                Show
-            )?;
-        } else {
-            let cx = inner_x as usize + label_w + app.edit_buf.width();
-            queue!(
-                stdout,
-                MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
-                Show
-            )?;
-        }
+        let (_, cursor_vis_x) = input_visible_window(&app.edit_buf, app.edit_buf_cursor, value_w);
+        let cx = inner_x as usize + label_w + cursor_vis_x;
+        queue!(
+            stdout,
+            MoveTo((cx as u16).min(cols.saturating_sub(1)), cy),
+            Show
+        )?;
     } else {
         queue!(stdout, Hide)?;
     }
