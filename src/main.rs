@@ -282,13 +282,11 @@ fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
             return;
         }
 
-        let client = match mcp::McpClient::spawn(
-            &settings.mcp_python_path,
-            &settings.mcp_script_path,
-        ) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+        let client =
+            match mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path) {
+                Ok(c) => c,
+                Err(_) => return,
+            };
 
         let mut tracked_email_ids = std::collections::HashSet::<String>::new();
 
@@ -2905,7 +2903,8 @@ fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 task.progress = Progress::Backlog;
                 let task_id = task.id;
                 app.tasks.push(task);
-                app.task_email_map.insert(task_id, suggestion.email_id.clone());
+                app.task_email_map
+                    .insert(task_id, suggestion.email_id.clone());
                 app.suggestions.remove(app.suggestions_selected);
                 if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
                 {
@@ -3432,7 +3431,11 @@ fn poll_suggestions(app: &mut App) -> bool {
     for event in events {
         match event {
             EmailEvent::NewSuggestion(suggestion) => {
-                if !app.suggestions.iter().any(|s| s.email_id == suggestion.email_id) {
+                if !app
+                    .suggestions
+                    .iter()
+                    .any(|s| s.email_id == suggestion.email_id)
+                {
                     app.suggestions.push(suggestion);
                     has_new = true;
                 }
@@ -6828,6 +6831,7 @@ fn print_help() {
     println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
     println!("  aipm task <command>              Task CRUD (see below)");
     println!("  aipm bucket <command>            Bucket CRUD (see below)");
+    println!("  aipm suggestions <command>       Email suggestions via MCP (see below)");
     println!("  aipm ingest --image <path>       Extract tasks from an image via AI");
     println!("  aipm ingest --clipboard          Extract tasks from clipboard image (macOS)");
     println!("  aipm undo                        Undo the last CLI/AI operation");
@@ -6852,6 +6856,10 @@ fn print_help() {
     println!("  aipm bucket add <name> [--description \"...\"]");
     println!("  aipm bucket rename <old> <new>");
     println!("  aipm bucket delete <name>        Moves tasks to first remaining bucket");
+    println!();
+    println!("Suggestions commands (MCP + AI):");
+    println!("  aipm suggestions list            List unread emails and show AI filtering");
+    println!("  aipm suggestions sync [--limit N] Create tasks from actionable emails");
     println!();
     println!("Undo / History:");
     println!("  aipm undo                        Restore state before last CLI/AI change");

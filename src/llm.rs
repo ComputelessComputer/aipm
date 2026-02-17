@@ -1709,9 +1709,8 @@ pub fn filter_email_for_suggestions(
     sender: &str,
     content: &str,
 ) -> Result<Option<SuggestedTask>, String> {
-    let cfg = build_config(settings).ok_or_else(|| {
-        "AI not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.".to_string()
-    })?;
+    let cfg = build_config(settings)
+        .ok_or_else(|| "AI not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.".to_string())?;
 
     let system = "You are an AI assistant that filters emails to identify actionable tasks. \
         Your job is to determine if an email contains something the user needs to act on. \
@@ -1749,7 +1748,9 @@ pub fn filter_email_for_suggestions(
 
     Ok(Some(SuggestedTask {
         title: parsed.title.unwrap_or_else(|| subject.to_string()),
-        description: parsed.description.unwrap_or_else(|| format!("From: {}", sender)),
+        description: parsed
+            .description
+            .unwrap_or_else(|| format!("From: {}", sender)),
         priority: parsed.priority.unwrap_or_else(|| "Medium".to_string()),
     }))
 }
