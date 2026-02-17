@@ -767,13 +767,46 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Left => {
-            if app.input_cursor > 0 {
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                while app.input_cursor > 0 {
+                    let prev = app.input_cursor - 1;
+                    let bp = char_byte_pos(&app.input, prev);
+                    if !app.input[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.input_cursor = prev;
+                }
+                while app.input_cursor > 0 {
+                    let prev = app.input_cursor - 1;
+                    let bp = char_byte_pos(&app.input, prev);
+                    if app.input[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.input_cursor = prev;
+                }
+            } else if app.input_cursor > 0 {
                 app.input_cursor -= 1;
             }
             Ok(false)
         }
         KeyCode::Right => {
-            if app.input_cursor < app.input.chars().count() {
+            let len = app.input.chars().count();
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                while app.input_cursor < len {
+                    let bp = char_byte_pos(&app.input, app.input_cursor);
+                    app.input_cursor += 1;
+                    if app.input[bp..].starts_with(' ') {
+                        break;
+                    }
+                }
+                while app.input_cursor < len {
+                    let bp = char_byte_pos(&app.input, app.input_cursor);
+                    if app.input[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.input_cursor += 1;
+                }
+            } else if app.input_cursor < len {
                 app.input_cursor += 1;
             }
             Ok(false)
@@ -1282,8 +1315,47 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.input_cursor = app.input.chars().count();
             Ok(false)
         }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            while app.input_cursor > 0 {
+                let prev = app.input_cursor - 1;
+                let bp = char_byte_pos(&app.input, prev);
+                if !app.input[bp..].starts_with(' ') {
+                    break;
+                }
+                app.input_cursor = prev;
+            }
+            while app.input_cursor > 0 {
+                let prev = app.input_cursor - 1;
+                let bp = char_byte_pos(&app.input, prev);
+                if app.input[bp..].starts_with(' ') {
+                    break;
+                }
+                app.input_cursor = prev;
+            }
+            Ok(false)
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+            let len = app.input.chars().count();
+            while app.input_cursor < len {
+                let bp = char_byte_pos(&app.input, app.input_cursor);
+                app.input_cursor += 1;
+                if app.input[bp..].starts_with(' ') {
+                    break;
+                }
+            }
+            while app.input_cursor < len {
+                let bp = char_byte_pos(&app.input, app.input_cursor);
+                if app.input[bp..].starts_with(' ') {
+                    break;
+                }
+                app.input_cursor += 1;
+            }
+            Ok(false)
+        }
         KeyCode::Char(ch) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::ALT)
+            {
                 return Ok(false);
             }
             let bp = char_byte_pos(&app.input, app.input_cursor);
@@ -1584,8 +1656,45 @@ fn handle_bucket_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             KeyCode::End => {
                 app.bucket_edit_buf_cursor = app.bucket_edit_buf.chars().count();
             }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                while app.bucket_edit_buf_cursor > 0 {
+                    let prev = app.bucket_edit_buf_cursor - 1;
+                    let bp = char_byte_pos(&app.bucket_edit_buf, prev);
+                    if !app.bucket_edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.bucket_edit_buf_cursor = prev;
+                }
+                while app.bucket_edit_buf_cursor > 0 {
+                    let prev = app.bucket_edit_buf_cursor - 1;
+                    let bp = char_byte_pos(&app.bucket_edit_buf, prev);
+                    if app.bucket_edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.bucket_edit_buf_cursor = prev;
+                }
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let len = app.bucket_edit_buf.chars().count();
+                while app.bucket_edit_buf_cursor < len {
+                    let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                    app.bucket_edit_buf_cursor += 1;
+                    if app.bucket_edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                }
+                while app.bucket_edit_buf_cursor < len {
+                    let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
+                    if app.bucket_edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.bucket_edit_buf_cursor += 1;
+                }
+            }
             KeyCode::Char(ch) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
                     let bp = char_byte_pos(&app.bucket_edit_buf, app.bucket_edit_buf_cursor);
                     app.bucket_edit_buf.insert(bp, ch);
                     app.bucket_edit_buf_cursor += 1;
@@ -1972,8 +2081,45 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             KeyCode::End => {
                 app.edit_buf_cursor = app.edit_buf.chars().count();
             }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                while app.edit_buf_cursor > 0 {
+                    let prev = app.edit_buf_cursor - 1;
+                    let bp = char_byte_pos(&app.edit_buf, prev);
+                    if !app.edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.edit_buf_cursor = prev;
+                }
+                while app.edit_buf_cursor > 0 {
+                    let prev = app.edit_buf_cursor - 1;
+                    let bp = char_byte_pos(&app.edit_buf, prev);
+                    if app.edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.edit_buf_cursor = prev;
+                }
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let len = app.edit_buf.chars().count();
+                while app.edit_buf_cursor < len {
+                    let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                    app.edit_buf_cursor += 1;
+                    if app.edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                }
+                while app.edit_buf_cursor < len {
+                    let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
+                    if app.edit_buf[bp..].starts_with(' ') {
+                        break;
+                    }
+                    app.edit_buf_cursor += 1;
+                }
+            }
             KeyCode::Char(ch) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
                     let bp = char_byte_pos(&app.edit_buf, app.edit_buf_cursor);
                     app.edit_buf.insert(bp, ch);
                     app.edit_buf_cursor += 1;
