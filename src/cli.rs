@@ -18,6 +18,8 @@ pub fn run_subcommand(args: &[String]) -> Option<io::Result<()>> {
     match sub {
         "task" => Some(run_task_cmd(&rest)),
         "bucket" => Some(run_bucket_cmd(&rest)),
+        "settings" => Some(run_settings_cmd(&rest)),
+        "suggestions" => Some(run_suggestions_cmd(&rest)),
         "undo" => Some(cmd_undo()),
         "history" => Some(cmd_history()),
         _ => None,
@@ -451,6 +453,91 @@ fn cmd_bucket_delete(args: &[String]) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Settings subcommands
+// ---------------------------------------------------------------------------
+
+fn run_settings_cmd(args: &[String]) -> io::Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("show");
+    match sub {
+        "show" | "get" => cmd_settings_show(),
+        "update" | "set" => cmd_settings_update(&args[1..]),
+        other => die(&format!("Unknown settings command: {other}")),
+    }
+}
+
+fn cmd_settings_show() -> io::Result<()> {
+    let (_, _, settings) = load();
+    print_json(&settings);
+    Ok(())
+}
+
+fn parse_bool_flag(val: &str) -> bool {
+    match val.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => die(&format!(
+            "Invalid boolean value: {val} (expected true/false)"
+        )),
+    }
+}
+
+fn cmd_settings_update(args: &[String]) -> io::Result<()> {
+    let (storage, _, mut settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot("settings update");
+    }
+
+    if let Some(v) = find_flag(args, "--owner-name") {
+        settings.owner_name = v;
+    }
+    if let Some(v) = find_flag(args, "--ai-enabled") {
+        settings.enabled = parse_bool_flag(&v);
+    }
+    if let Some(v) = find_flag(args, "--openai-api-key") {
+        settings.openai_api_key = v;
+    }
+    if let Some(v) = find_flag(args, "--anthropic-api-key") {
+        settings.anthropic_api_key = v;
+    }
+    if let Some(v) = find_flag(args, "--model") {
+        settings.model = v;
+    }
+    if let Some(v) = find_flag(args, "--api-url") {
+        settings.api_url = v;
+    }
+    if let Some(v) = find_flag(args, "--timeout") {
+        settings.timeout_secs = v
+            .parse::<u64>()
+            .unwrap_or_else(|_| die(&format!("Invalid timeout: {v}")));
+    }
+    if let Some(v) = find_flag(args, "--show-backlog") {
+        settings.show_backlog = parse_bool_flag(&v);
+    }
+    if let Some(v) = find_flag(args, "--show-todo") {
+        settings.show_todo = parse_bool_flag(&v);
+    }
+    if let Some(v) = find_flag(args, "--show-in-progress") {
+        settings.show_in_progress = parse_bool_flag(&v);
+    }
+    if let Some(v) = find_flag(args, "--show-done") {
+        settings.show_done = parse_bool_flag(&v);
+    }
+    if let Some(v) = find_flag(args, "--mcp-python-path") {
+        settings.mcp_python_path = v;
+    }
+    if let Some(v) = find_flag(args, "--mcp-script-path") {
+        settings.mcp_script_path = v;
+    }
+    if let Some(v) = find_flag(args, "--mcp-enabled") {
+        settings.mcp_enabled = parse_bool_flag(&v);
+    }
+
+    save_settings(&storage, &settings);
+    print_json(&settings);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Undo / History subcommands
 // ---------------------------------------------------------------------------
 
@@ -469,5 +556,134 @@ fn cmd_history() -> io::Result<()> {
     let storage = storage.unwrap_or_else(|| die("No data directory found"));
     let entries = storage.list_history();
     print_json(&entries);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions subcommands
+// ---------------------------------------------------------------------------
+
+fn run_suggestions_cmd(args: &[String]) -> io::Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    match sub {
+        "list" | "ls" => cmd_suggestions_list(),
+        "sync" => cmd_suggestions_sync(&args[1..]),
+        other => die(&format!("Unknown suggestions command: {other}")),
+    }
+}
+
+fn cmd_suggestions_list() -> io::Result<()> {
+    let (_, _, settings) = load();
+    if !settings.mcp_enabled {
+        die("MCP is not enabled. Enable it in settings first.");
+    }
+    if settings.mcp_python_path.trim().is_empty() || settings.mcp_script_path.trim().is_empty() {
+        die("MCP Python path or script path not configured.");
+    }
+
+    let client = crate::mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path)
+        .map_err(|e| io::Error::other(e))?;
+
+    let emails = client
+        .get_recent_emails(10)
+        .map_err(|e| io::Error::other(e))?;
+
+    let unread: Vec<_> = emails.iter().filter(|e| !e.is_read).collect();
+
+    println!("Found {} unread emails:", unread.len());
+    for email in unread {
+        println!("\nID: {}", email.id);
+        println!("From: {}", email.sender);
+        println!("Subject: {}", email.subject);
+        println!("Date: {}", email.date);
+
+        // Try AI filtering
+        if let Ok(Some(suggestion)) = crate::llm::filter_email_for_suggestions(
+            &settings,
+            &email.subject,
+            &email.sender,
+            email.content.as_deref().unwrap_or(""),
+        ) {
+            println!("✓ Actionable:");
+            println!("  Title: {}", suggestion.title);
+            println!("  Priority: {}", suggestion.priority);
+            if !suggestion.description.is_empty() {
+                println!("  Description: {}", suggestion.description);
+            }
+        } else {
+            println!("✗ Not actionable (filtered out)");
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_suggestions_sync(args: &[String]) -> io::Result<()> {
+    let (storage, mut tasks, settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot("suggestions sync");
+    }
+
+    if !settings.mcp_enabled {
+        die("MCP is not enabled. Enable it in settings first.");
+    }
+    if settings.mcp_python_path.trim().is_empty() || settings.mcp_script_path.trim().is_empty() {
+        die("MCP Python path or script path not configured.");
+    }
+
+    let client = crate::mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path)
+        .map_err(|e| io::Error::other(e))?;
+
+    let emails = client
+        .get_recent_emails(10)
+        .map_err(|e| io::Error::other(e))?;
+
+    let limit = if let Some(limit_str) = find_flag(args, "--limit") {
+        limit_str.parse::<usize>().unwrap_or(10)
+    } else {
+        10
+    };
+
+    let mut created = 0;
+    for email in emails.iter().filter(|e| !e.is_read).take(limit) {
+        if let Ok(Some(suggestion)) = crate::llm::filter_email_for_suggestions(
+            &settings,
+            &email.subject,
+            &email.sender,
+            email.content.as_deref().unwrap_or(""),
+        ) {
+            let priority = match suggestion.priority.to_ascii_lowercase().as_str() {
+                "low" => Priority::Low,
+                "medium" => Priority::Medium,
+                "high" => Priority::High,
+                "critical" => Priority::Critical,
+                _ => Priority::Medium,
+            };
+
+            let now = Utc::now();
+            let bucket = settings
+                .buckets
+                .first()
+                .map(|b| b.name.clone())
+                .unwrap_or_else(|| "Unassigned".to_string());
+
+            let mut task = Task::new(bucket, suggestion.title.clone(), now);
+            task.description = format!(
+                "{}\n\nFrom: {}\nEmail ID: {}",
+                suggestion.description, email.sender, email.id
+            );
+            task.priority = priority;
+            task.progress = Progress::Backlog;
+
+            println!("Created task from email: {}", task.title);
+            tasks.push(task);
+            created += 1;
+        }
+    }
+
+    save_tasks(&storage, &tasks);
+    print_json(&serde_json::json!({
+        "created": created,
+    }));
     Ok(())
 }
