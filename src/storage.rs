@@ -336,7 +336,7 @@ impl Storage {
             return Ok(());
         }
 
-        let old_names: &[&str] = &["John", "John-only"];
+        let old_names: &[&str] = &["John", "John-only", "Personal-only"];
         let new_name = "Personal";
 
         for entry in fs::read_dir(&tasks_dir)? {
