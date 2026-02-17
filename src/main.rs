@@ -3638,6 +3638,19 @@ fn build_triage_context(tasks: &[Task]) -> String {
     out
 }
 
+/// Estimate the AI context size in tokens (rough approximation: ~4 chars per token).
+fn estimate_context_tokens(tasks: &[Task], chat_history: &[llm::ChatEntry]) -> usize {
+    let triage_ctx = build_triage_context(tasks);
+    let mut total_chars = triage_ctx.len();
+
+    for entry in chat_history.iter() {
+        total_chars += entry.user_input.len() + entry.ai_summary.len();
+    }
+
+    // Rough estimate: ~4 chars per token for English text.
+    total_chars / 4
+}
+
 fn format_task_snapshot(task: &Task) -> String {
     let deps = if task.dependencies.is_empty() {
         "none".to_string()
@@ -4137,15 +4150,21 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         ResetColor
     )?;
 
-    // Help
+    // Help line with context indicator on the right.
+    let help_text = "tab/i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear";
+    let context_tokens = estimate_context_tokens(&app.tasks, &app.chat_history);
+    let context_indicator = format!("ctx ~{}k", context_tokens / 1000);
+    let help_left_max = content_width.saturating_sub(context_indicator.len() + 2);
+    let help_left = clamp_text(help_text, help_left_max);
+    let padding = content_width.saturating_sub(help_left.width() + context_indicator.len());
+
     queue!(
         stdout,
         MoveTo(x_input, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(
-            "tab/i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear • 1/2/3 tabs",
-            content_width,
-        )),
+        Print(&help_left),
+        Print(" ".repeat(padding)),
+        Print(&context_indicator),
         ResetColor
     )?;
 
