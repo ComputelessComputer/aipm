@@ -4071,9 +4071,10 @@ fn render_bucket_column(
         y_cursor += CARD_LINES as u16;
 
         // Render sub-issues below the card.
-        if has_children {
+        let visible_children = visible_children_of(&app.tasks, task.id, &app.settings);
+        if !visible_children.is_empty() {
             let max_shown = 3usize;
-            for &child_idx in child_indices.iter().take(max_shown) {
+            for &child_idx in visible_children.iter().take(max_shown) {
                 if y_cursor >= max_y {
                     break;
                 }
@@ -4105,8 +4106,8 @@ fn render_bucket_column(
                 queue!(stdout, ResetColor)?;
                 y_cursor += 1;
             }
-            if child_indices.len() > max_shown && y_cursor < max_y {
-                let more_text = format!("    +{} more", child_indices.len() - max_shown);
+            if visible_children.len() > max_shown && y_cursor < max_y {
+                let more_text = format!("    +{} more", visible_children.len() - max_shown);
                 queue!(
                     stdout,
                     MoveTo(x, y_cursor),
