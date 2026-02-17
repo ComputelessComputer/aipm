@@ -24,7 +24,9 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 
-use crate::model::{children_of, compute_parent_progress, Priority, Progress, Suggestion, Task};
+use crate::model::{
+    children_of, compute_parent_progress, EmailEvent, Priority, Progress, Suggestion, Task,
+};
 use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,7 +250,8 @@ struct App {
     suggestions_selected: usize,
     suggestions_scroll: usize,
 
-    suggestions_rx: Option<mpsc::Receiver<Suggestion>>,
+    suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
+    task_email_map: std::collections::HashMap<Uuid, String>,
 }
 
 struct TerminalGuard;
@@ -269,7 +272,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<Suggestion> {
+fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         if !settings.mcp_enabled
@@ -287,6 +290,8 @@ fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<Suggestion> {
             Err(_) => return,
         };
 
+        let mut tracked_email_ids = std::collections::HashSet::<String>::new();
+
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
 
@@ -295,10 +300,29 @@ fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<Suggestion> {
                 Err(_) => continue,
             };
 
+            let current_unread_ids: std::collections::HashSet<String> = emails
+                .iter()
+                .filter(|e| !e.is_read)
+                .map(|e| e.id.clone())
+                .collect();
+
+            let archived: Vec<String> = tracked_email_ids
+                .iter()
+                .filter(|id| !current_unread_ids.contains(*id))
+                .cloned()
+                .collect();
+
+            for email_id in archived {
+                let _ = tx.send(EmailEvent::Archived(email_id.clone()));
+                tracked_email_ids.remove(&email_id);
+            }
+
             for email in emails {
                 if email.is_read {
                     continue;
                 }
+
+                tracked_email_ids.insert(email.id.clone());
 
                 let content = email.content.as_deref().unwrap_or("");
                 let filtered = match llm::filter_email_for_suggestions(
@@ -328,7 +352,7 @@ fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<Suggestion> {
                     created_at: chrono::Utc::now(),
                 };
 
-                let _ = tx.send(suggestion);
+                let _ = tx.send(EmailEvent::NewSuggestion(suggestion));
             }
         }
     });
@@ -459,6 +483,7 @@ fn main() -> io::Result<()> {
         suggestions_selected: 0,
         suggestions_scroll: 0,
         suggestions_rx: None,
+        task_email_map: std::collections::HashMap::new(),
     };
 
     app.update_rx = Some(spawn_update_check());
@@ -2878,7 +2903,9 @@ fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 task.description = suggestion.description;
                 task.priority = suggestion.priority;
                 task.progress = Progress::Backlog;
+                let task_id = task.id;
                 app.tasks.push(task);
+                app.task_email_map.insert(task_id, suggestion.email_id.clone());
                 app.suggestions.remove(app.suggestions_selected);
                 if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
                 {
@@ -3395,10 +3422,36 @@ fn poll_ai(app: &mut App) -> bool {
 
 fn poll_suggestions(app: &mut App) -> bool {
     let mut has_new = false;
+    let mut events = Vec::new();
     if let Some(rx) = &app.suggestions_rx {
-        while let Ok(suggestion) = rx.try_recv() {
-            if !app.suggestions.iter().any(|s| s.email_id == suggestion.email_id) {
-                app.suggestions.push(suggestion);
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+    }
+
+    for event in events {
+        match event {
+            EmailEvent::NewSuggestion(suggestion) => {
+                if !app.suggestions.iter().any(|s| s.email_id == suggestion.email_id) {
+                    app.suggestions.push(suggestion);
+                    has_new = true;
+                }
+            }
+            EmailEvent::Archived(email_id) => {
+                app.suggestions.retain(|s| s.email_id != email_id);
+                let task_ids_to_remove: Vec<Uuid> = app
+                    .task_email_map
+                    .iter()
+                    .filter(|(_, e_id)| *e_id == &email_id)
+                    .map(|(t_id, _)| *t_id)
+                    .collect();
+                for task_id in &task_ids_to_remove {
+                    app.tasks.retain(|t| t.id != *task_id);
+                    app.task_email_map.remove(task_id);
+                }
+                if !task_ids_to_remove.is_empty() {
+                    persist(app);
+                }
                 has_new = true;
             }
         }

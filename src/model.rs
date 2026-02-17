@@ -165,6 +165,12 @@ pub struct Suggestion {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub enum EmailEvent {
+    NewSuggestion(Suggestion),
+    Archived(String),
+}
+
 /// Derive a parent's progress from its children.
 ///
 /// - All children Done → Done
