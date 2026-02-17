@@ -1376,7 +1376,8 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 // If still in the edit overlay, clamp sub-issue selection.
                 if app.focus == Focus::Edit {
                     if let Some(parent_id) = app.edit_task_id {
-                        let child_count = children_of(&app.tasks, parent_id).len();
+                        let child_count =
+                            visible_children_of(&app.tasks, parent_id, &app.settings).len();
                         app.edit_sub_selected =
                             app.edit_sub_selected.min(child_count.saturating_sub(1));
                     }
@@ -1800,7 +1801,7 @@ fn close_edit(app: &mut App) {
         if app.tasks.iter().any(|t| t.id == parent_id) {
             app.edit_task_id = Some(parent_id);
             app.edit_field = field;
-            let child_count = children_of(&app.tasks, parent_id).len();
+            let child_count = visible_children_of(&app.tasks, parent_id, &app.settings).len();
             app.edit_sub_selected = sub_sel.min(child_count.saturating_sub(1));
             app.editing_text = false;
             load_edit_buf(app);
@@ -2138,7 +2139,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Up | KeyCode::Char('k') => {
             if app.edit_field == EditField::SubIssues {
                 if let Some(task_id) = app.edit_task_id {
-                    let child_count = children_of(&app.tasks, task_id).len();
+                    let child_count = visible_children_of(&app.tasks, task_id, &app.settings).len();
                     if child_count > 0 && app.edit_sub_selected > 0 {
                         app.edit_sub_selected -= 1;
                         return Ok(false);
@@ -2157,7 +2158,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.edit_field = EditField::ALL[next];
             if app.edit_field == EditField::SubIssues {
                 if let Some(task_id) = app.edit_task_id {
-                    let child_count = children_of(&app.tasks, task_id).len();
+                    let child_count = visible_children_of(&app.tasks, task_id, &app.settings).len();
                     app.edit_sub_selected = child_count.saturating_sub(1);
                 }
             }
@@ -2166,7 +2167,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Down | KeyCode::Char('j') => {
             if app.edit_field == EditField::SubIssues {
                 if let Some(task_id) = app.edit_task_id {
-                    let child_count = children_of(&app.tasks, task_id).len();
+                    let child_count = visible_children_of(&app.tasks, task_id, &app.settings).len();
                     if child_count > 0 && app.edit_sub_selected < child_count - 1 {
                         app.edit_sub_selected += 1;
                         return Ok(false);
@@ -2187,10 +2188,11 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Enter | KeyCode::Char('e') => {
             if app.edit_field == EditField::SubIssues {
                 if let Some(task_id) = app.edit_task_id {
-                    let child_ids: Vec<Uuid> = children_of(&app.tasks, task_id)
-                        .iter()
-                        .map(|&i| app.tasks[i].id)
-                        .collect();
+                    let child_ids: Vec<Uuid> =
+                        visible_children_of(&app.tasks, task_id, &app.settings)
+                            .iter()
+                            .map(|&i| app.tasks[i].id)
+                            .collect();
                     if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
                         app.edit_parent_stack.push((
                             task_id,
@@ -2243,7 +2245,8 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     let child_id = child.id;
                     app.tasks.push(child);
                     persist(app);
-                    let child_count = children_of(&app.tasks, parent_id).len();
+                    let child_count =
+                        visible_children_of(&app.tasks, parent_id, &app.settings).len();
                     let new_sub_idx = child_count.saturating_sub(1);
                     app.edit_parent_stack
                         .push((parent_id, EditField::SubIssues, new_sub_idx));
@@ -2260,10 +2263,11 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if app.edit_field == EditField::SubIssues {
                 // Delete the selected sub-issue (via confirmation dialog).
                 if let Some(parent_id) = app.edit_task_id {
-                    let child_ids: Vec<Uuid> = children_of(&app.tasks, parent_id)
-                        .iter()
-                        .map(|&i| app.tasks[i].id)
-                        .collect();
+                    let child_ids: Vec<Uuid> =
+                        visible_children_of(&app.tasks, parent_id, &app.settings)
+                            .iter()
+                            .map(|&i| app.tasks[i].id)
+                            .collect();
                     if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
                         app.confirm_delete_id = Some(child_id);
                     }
@@ -3038,6 +3042,7 @@ fn poll_ai(app: &mut App) -> bool {
                 changed = true;
             }
         }
+        sync_parent_progress(&mut app.tasks, parent_id, Utc::now());
 
         // Create actual sub-task records when the edit response includes subtasks.
         if !result.sub_task_specs.is_empty() {
@@ -3086,6 +3091,10 @@ fn poll_ai(app: &mut App) -> bool {
                 }
             }
 
+            // Sync parent progress after subtask creation.
+            if let Some(first_id) = new_ids.first().copied() {
+                sync_parent_progress(&mut app.tasks, first_id, now);
+            }
             app.status = Some((
                 format!(
                     "AI created {} sub-task{}",
@@ -5319,7 +5328,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let desc_lines = desc_wrapped.as_ref().map(|w| w.len()).unwrap_or(1).max(1);
 
     // Sub-issues section.
-    let child_indices = children_of(&app.tasks, task.id);
+    let child_indices = visible_children_of(&app.tasks, task.id, &app.settings);
     let child_visible = child_indices.len().min(5);
     // box_height: 9 (base fields) + desc_lines + 2 (separator + header) + child_visible
     let box_height = (11 + desc_lines as u16 + child_visible as u16).min(rows.saturating_sub(2));
