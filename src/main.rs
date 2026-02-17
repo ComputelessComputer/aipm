@@ -537,20 +537,33 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     Ok(false)
 }
 
+fn task_start_date(task: &Task) -> chrono::NaiveDate {
+    task.start_date
+        .map(|dt| dt.date_naive())
+        .unwrap_or_else(|| task.created_at.date_naive())
+}
+
 fn sorted_timeline_tasks(tasks: &[Task]) -> Vec<usize> {
-    let mut indices: Vec<usize> = (0..tasks.len()).collect();
-    indices.sort_by(|&a, &b| {
-        let a_start = tasks[a]
-            .start_date
-            .map(|dt| dt.date_naive())
-            .unwrap_or_else(|| tasks[a].created_at.date_naive());
-        let b_start = tasks[b]
-            .start_date
-            .map(|dt| dt.date_naive())
-            .unwrap_or_else(|| tasks[b].created_at.date_naive());
-        a_start.cmp(&b_start)
-    });
-    indices
+    // Collect top-level (non-child) task indices, sorted by start date.
+    let mut roots: Vec<usize> = (0..tasks.len()).filter(|&i| !tasks[i].is_child()).collect();
+    roots.sort_by(|&a, &b| task_start_date(&tasks[a]).cmp(&task_start_date(&tasks[b])));
+
+    let mut result: Vec<usize> = Vec::with_capacity(tasks.len());
+    for &ri in &roots {
+        result.push(ri);
+        let mut children: Vec<usize> = children_of(tasks, tasks[ri].id);
+        children.sort_by(|&a, &b| task_start_date(&tasks[a]).cmp(&task_start_date(&tasks[b])));
+        result.extend(children);
+    }
+
+    // Append orphan children whose parent isn't in the task list.
+    for (i, task) in tasks.iter().enumerate() {
+        if task.is_child() && !result.contains(&i) {
+            result.push(i);
+        }
+    }
+
+    result
 }
 
 fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
@@ -4465,7 +4478,15 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
             start.format("%Y-%m-%d"),
             end.format("%Y-%m-%d"),
         );
-        let line2 = format!("  {}", desc);
+        let line2 = if let Some(pid) = task.parent_id {
+            if let Some(parent) = app.tasks.iter().find(|t| t.id == pid) {
+                format!("  Parent Task: {}", parent.title)
+            } else {
+                format!("  {}", desc)
+            }
+        } else {
+            format!("  {}", desc)
+        };
 
         queue!(
             stdout,
