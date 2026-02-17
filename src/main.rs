@@ -5,6 +5,7 @@ mod model;
 mod storage;
 
 use std::io::{self, Stdout, Write};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -234,6 +235,8 @@ struct App {
     input_saved: String,
 
     at_autocomplete_selected: usize,
+
+    update_rx: Option<mpsc::Receiver<String>>,
 }
 
 struct TerminalGuard;
@@ -252,6 +255,35 @@ impl Drop for TerminalGuard {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(stdout, Show, LeaveAlternateScreen);
     }
+}
+
+fn spawn_update_check() -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let current = env!("CARGO_PKG_VERSION");
+        let Ok(resp) =
+            ureq::get("https://api.github.com/repos/ComputelessComputer/aipm/releases/latest")
+                .set("User-Agent", "aipm")
+                .timeout(std::time::Duration::from_secs(5))
+                .call()
+        else {
+            return;
+        };
+        let Ok(body) = resp.into_string() else {
+            return;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return;
+        };
+        let Some(tag) = json["tag_name"].as_str() else {
+            return;
+        };
+        let latest = tag.strip_prefix('v').unwrap_or(tag);
+        if latest != current {
+            let _ = tx.send(latest.to_string());
+        }
+    });
+    rx
 }
 
 fn main() -> io::Result<()> {
@@ -339,7 +371,10 @@ fn main() -> io::Result<()> {
         input_history_index: None,
         input_saved: String::new(),
         at_autocomplete_selected: 0,
+        update_rx: None,
     };
+
+    app.update_rx = Some(spawn_update_check());
 
     ensure_default_selection(&mut app);
 
@@ -358,6 +393,21 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     loop {
         if poll_ai(app) {
             needs_redraw = true;
+        }
+
+        if let Some(rx) = &app.update_rx {
+            if let Ok(latest) = rx.try_recv() {
+                app.status = Some((
+                    format!(
+                        "Update available: v{latest} (current: v{})",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    Instant::now(),
+                    false,
+                ));
+                app.update_rx = None;
+                needs_redraw = true;
+            }
         }
 
         // Auto-dismiss toast after timeout (skip for persistent toasts).
