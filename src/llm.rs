@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -234,10 +235,35 @@ impl AiRuntime {
     }
 }
 
+const MAX_PARALLEL_JOBS: usize = 8;
+
 fn worker_loop(cfg: LlmConfig, job_rx: Receiver<AiJob>, result_tx: Sender<AiResult>) {
+    let cfg = Arc::new(cfg);
+    let active = Arc::new((Mutex::new(0usize), Condvar::new()));
+
     for job in job_rx {
-        let result = enrich_task(&cfg, &job);
-        let _ = result_tx.send(result);
+        let cfg = Arc::clone(&cfg);
+        let tx = result_tx.clone();
+        let active = Arc::clone(&active);
+
+        {
+            let (lock, cvar) = &*active;
+            let mut count = lock.lock().unwrap();
+            while *count >= MAX_PARALLEL_JOBS {
+                count = cvar.wait(count).unwrap();
+            }
+            *count += 1;
+        }
+
+        thread::spawn(move || {
+            let result = enrich_task(&cfg, &job);
+            let _ = tx.send(result);
+
+            let (lock, cvar) = &*active;
+            let mut count = lock.lock().unwrap();
+            *count -= 1;
+            cvar.notify_one();
+        });
     }
 }
 
@@ -338,13 +364,22 @@ struct GhUser {
 
 /// Fetch context for a list of URLs. Best-effort; failures are silently skipped.
 fn fetch_url_contexts(urls: &[String], timeout: Duration) -> Vec<UrlContext> {
-    let mut out = Vec::new();
-    for url in urls.iter().take(15) {
-        if let Some(ctx) = fetch_single_url(url, timeout) {
-            out.push(ctx);
-        }
+    let urls: Vec<&String> = urls.iter().take(15).collect();
+    if urls.is_empty() {
+        return Vec::new();
     }
-    out
+
+    thread::scope(|s| {
+        let handles: Vec<_> = urls
+            .iter()
+            .map(|url| s.spawn(|| fetch_single_url(url, timeout)))
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    })
 }
 
 fn fetch_single_url(url: &str, timeout: Duration) -> Option<UrlContext> {

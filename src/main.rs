@@ -423,20 +423,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return Ok(true);
     }
 
-    // Cmd+C: copy selected task title to clipboard.
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::SUPER) {
-        if let Some(title) = focused_task_title(app) {
-            copy_to_clipboard(&title);
-            let display = if title.len() > 40 {
-                format!("Copied: {}…", &title[..40])
-            } else {
-                format!("Copied: {}", title)
-            };
-            app.status = Some((display, Instant::now(), false));
-        }
-        return Ok(false);
-    }
-
     // Toast dismissal intercepts all keys (skip for persistent toasts).
     if let Some((_, _, persistent)) = &app.status {
         if !persistent {
@@ -2431,53 +2417,6 @@ fn move_kanban_selection(app: &mut App, delta: i32) {
     scroll_kanban_to_selected(app);
 }
 
-fn focused_task_title(app: &App) -> Option<String> {
-    let task_id = if app.focus == Focus::Edit {
-        if app.edit_field == EditField::SubIssues {
-            app.edit_task_id.and_then(|pid| {
-                let child_ids: Vec<Uuid> = children_of(&app.tasks, pid)
-                    .iter()
-                    .map(|&i| app.tasks[i].id)
-                    .collect();
-                child_ids
-                    .get(app.edit_sub_selected)
-                    .copied()
-                    .or(app.edit_task_id)
-            })
-        } else {
-            app.edit_task_id
-        }
-    } else {
-        match app.tab {
-            Tab::Default => app.selected_task_id,
-            Tab::Timeline => {
-                let indices = sorted_timeline_tasks(&app.tasks);
-                indices
-                    .get(app.timeline_selected)
-                    .map(|&idx| app.tasks[idx].id)
-            }
-            Tab::Kanban => app.kanban_selected,
-            Tab::Settings => None,
-        }
-    };
-    task_id.and_then(|id| {
-        app.tasks
-            .iter()
-            .find(|t| t.id == id)
-            .map(|t| t.title.clone())
-    })
-}
-
-fn copy_to_clipboard(text: &str) {
-    use std::process::{Command, Stdio};
-    if let Ok(mut child) = Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
 fn persist(app: &mut App) {
     let Some(storage) = &app.storage else {
         return;
@@ -2777,6 +2716,10 @@ fn poll_ai(app: &mut App) -> bool {
                                 t.dependencies = dep_ids;
                             }
                         }
+                        // Sync parent progress after subtask creation.
+                        if let Some(first_id) = new_ids.first().copied() {
+                            sync_parent_progress(&mut app.tasks, first_id, now);
+                        }
                         app.status = Some((
                             format!(
                                 "AI created: {} (+{} sub-task{})",
@@ -2816,6 +2759,7 @@ fn poll_ai(app: &mut App) -> bool {
                             apply_update(task, &result.update, &deps, now);
                             changed = true;
                         }
+                        sync_parent_progress(&mut app.tasks, id, Utc::now());
                         // Create sub-tasks if the update response includes them.
                         if !result.sub_task_specs.is_empty() {
                             let now = Utc::now();
@@ -2859,6 +2803,10 @@ fn poll_ai(app: &mut App) -> bool {
                                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
                                     task.dependencies = dep_ids;
                                 }
+                            }
+                            // Sync parent progress after subtask creation.
+                            if let Some(first_id) = new_ids.first().copied() {
+                                sync_parent_progress(&mut app.tasks, first_id, now);
                             }
                             let title = app
                                 .tasks
@@ -2971,6 +2919,10 @@ fn poll_ai(app: &mut App) -> bool {
                         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
                             task.dependencies = deps;
                         }
+                    }
+                    // Sync parent progress after decomposition.
+                    if let Some(first_id) = new_ids.first().copied() {
+                        sync_parent_progress(&mut app.tasks, first_id, now);
                     }
                     app.status = Some((
                         format!(
@@ -3535,6 +3487,25 @@ fn clamp_bucket_scroll(app: &mut App, total: usize) {
 
     let max_scroll = total.saturating_sub(visible);
     *scroll = (*scroll).min(max_scroll);
+}
+
+fn visible_children_of(tasks: &[Task], parent_id: Uuid, settings: &AiSettings) -> Vec<usize> {
+    let mut indices: Vec<usize> = children_of(tasks, parent_id)
+        .into_iter()
+        .filter(|&i| settings.is_progress_visible(tasks[i].progress))
+        .collect();
+
+    indices.sort_by(|&a, &b| {
+        let ta = &tasks[a];
+        let tb = &tasks[b];
+        tb.progress
+            .stage_index()
+            .cmp(&ta.progress.stage_index())
+            .then_with(|| tb.priority.cmp(&ta.priority))
+            .then_with(|| tb.created_at.cmp(&ta.created_at))
+    });
+
+    indices
 }
 
 fn bucket_task_indices(tasks: &[Task], bucket_name: &str, settings: &AiSettings) -> Vec<usize> {
