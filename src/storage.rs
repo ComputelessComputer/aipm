@@ -585,6 +585,144 @@ fn parse_task_file(content: &str) -> Result<Task, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshots (undo history)
+// ---------------------------------------------------------------------------
+
+const MAX_SNAPSHOTS: usize = 50;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub label: String,
+    pub timestamp: DateTime<Utc>,
+    pub tasks: Vec<Task>,
+    pub settings: AiSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub seq: u64,
+    pub label: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+impl Storage {
+    fn history_dir(&self) -> PathBuf {
+        self.dir.join("history")
+    }
+
+    pub fn snapshot(&self, label: &str) {
+        if let Err(err) = self.snapshot_inner(label) {
+            eprintln!("Snapshot warning: {err}");
+        }
+    }
+
+    fn snapshot_inner(&self, label: &str) -> io::Result<()> {
+        let hist = self.history_dir();
+        fs::create_dir_all(&hist)?;
+
+        let tasks = self.load_tasks().unwrap_or_default();
+        let settings = self.load_settings().unwrap_or_default();
+        let now = Utc::now();
+        let seq = self.next_seq();
+
+        let snap = Snapshot {
+            label: label.to_string(),
+            timestamp: now,
+            tasks,
+            settings,
+        };
+
+        let filename = format!("{:05}-{}.json", seq, now.format("%Y%m%dT%H%M%S"));
+        let path = hist.join(&filename);
+        let json = serde_json::to_string(&snap).map_err(|err| io::Error::other(err.to_string()))?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, &path)?;
+
+        self.trim_history();
+        Ok(())
+    }
+
+    pub fn undo(&self) -> io::Result<String> {
+        let files = self.sorted_snapshot_files();
+        let latest = files
+            .last()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No undo history available"))?;
+
+        let content = fs::read_to_string(latest)?;
+        let snap: Snapshot = serde_json::from_str(&content)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+
+        self.save_tasks(&snap.tasks)?;
+        self.save_settings(&snap.settings)?;
+
+        let label = snap.label.clone();
+        fs::remove_file(latest)?;
+        Ok(label)
+    }
+
+    pub fn list_history(&self) -> Vec<HistoryEntry> {
+        let files = self.sorted_snapshot_files();
+        let mut entries = Vec::new();
+        for path in &files {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(snap) = serde_json::from_str::<Snapshot>(&content) {
+                    let seq = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| n.split('-').next())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    entries.push(HistoryEntry {
+                        seq,
+                        label: snap.label,
+                        timestamp: snap.timestamp,
+                    });
+                }
+            }
+        }
+        entries
+    }
+
+    fn sorted_snapshot_files(&self) -> Vec<PathBuf> {
+        let hist = self.history_dir();
+        let mut files: Vec<PathBuf> = fs::read_dir(&hist)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.sorted_snapshot_files()
+            .last()
+            .and_then(|p| {
+                p.file_name()?
+                    .to_str()?
+                    .split('-')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .map(|n| n + 1)
+            .unwrap_or(1)
+    }
+
+    fn trim_history(&self) {
+        let files = self.sorted_snapshot_files();
+        if files.len() > MAX_SNAPSHOTS {
+            for path in &files[..files.len() - MAX_SNAPSHOTS] {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Data directory
 // ---------------------------------------------------------------------------
 

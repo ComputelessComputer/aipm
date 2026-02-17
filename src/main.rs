@@ -5797,6 +5797,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
     // Persist.
     if total_changes > 0 {
         if let Some(s) = &storage {
+            s.snapshot("ai triage");
             if let Err(err) = s.save_tasks(&tasks) {
                 eprintln!("Save failed: {err}");
             } else {
@@ -5828,6 +5829,8 @@ fn print_help() {
     println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
     println!("  aipm task <command>              Task CRUD (see below)");
     println!("  aipm bucket <command>            Bucket CRUD (see below)");
+    println!("  aipm undo                        Undo the last CLI/AI operation");
+    println!("  aipm history                     List recent undo snapshots");
     println!("  aipm --help");
     println!("  aipm --version");
     println!();
@@ -5848,6 +5851,10 @@ fn print_help() {
     println!("  aipm bucket add <name> [--description \"...\"]");
     println!("  aipm bucket rename <old> <new>");
     println!("  aipm bucket delete <name>        Moves tasks to first remaining bucket");
+    println!();
+    println!("Undo / History:");
+    println!("  aipm undo                        Restore state before last CLI/AI change");
+    println!("  aipm history                     List available undo snapshots (JSON)");
     println!();
     println!("AI examples:");
     println!("  aipm \"break down all tickets into sub-issues\"");

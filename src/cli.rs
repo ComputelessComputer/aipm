@@ -18,6 +18,8 @@ pub fn run_subcommand(args: &[String]) -> Option<io::Result<()>> {
     match sub {
         "task" => Some(run_task_cmd(&rest)),
         "bucket" => Some(run_bucket_cmd(&rest)),
+        "undo" => Some(cmd_undo()),
+        "history" => Some(cmd_history()),
         _ => None,
     }
 }
@@ -137,6 +139,9 @@ fn cmd_task_list() -> io::Result<()> {
 
 fn cmd_task_add(args: &[String]) -> io::Result<()> {
     let (storage, mut tasks, settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot("task add");
+    }
 
     let title = find_flag(args, "--title").unwrap_or_else(|| die("--title is required"));
     let bucket = find_flag(args, "--bucket").unwrap_or_else(|| {
@@ -183,6 +188,9 @@ fn cmd_task_edit(args: &[String]) -> io::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or_else(|| die("task id required"));
     let (storage, mut tasks, _) = load();
+    if let Some(s) = &storage {
+        s.snapshot(&format!("task edit {prefix}"));
+    }
     let task_id = resolve_task(&tasks, prefix).id;
     let now = Utc::now();
 
@@ -230,6 +238,9 @@ fn cmd_task_delete(args: &[String]) -> io::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or_else(|| die("task id required"));
     let (storage, mut tasks, _) = load();
+    if let Some(s) = &storage {
+        s.snapshot(&format!("task delete {prefix}"));
+    }
     let target = resolve_task(&tasks, prefix);
     let target_id = target.id;
     let title = target.title.clone();
@@ -295,6 +306,9 @@ fn cmd_bucket_add(args: &[String]) -> io::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or_else(|| die("bucket name required"));
     let (storage, _, mut settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot(&format!("bucket add {name}"));
+    }
 
     if settings
         .buckets
@@ -325,6 +339,9 @@ fn cmd_bucket_rename(args: &[String]) -> io::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or_else(|| die("new name required"));
     let (storage, mut tasks, mut settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot(&format!("bucket rename {old} {new}"));
+    }
 
     let bucket = settings
         .buckets
@@ -362,6 +379,9 @@ fn cmd_bucket_delete(args: &[String]) -> io::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or_else(|| die("bucket name required"));
     let (storage, mut tasks, mut settings) = load();
+    if let Some(s) = &storage {
+        s.snapshot(&format!("bucket delete {name}"));
+    }
 
     if settings.buckets.len() <= 1 {
         die("Cannot delete the last bucket");
@@ -398,5 +418,27 @@ fn cmd_bucket_delete(args: &[String]) -> io::Result<()> {
         "tasks_moved_to": fallback,
         "tasks_moved": moved,
     }));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Undo / History subcommands
+// ---------------------------------------------------------------------------
+
+fn cmd_undo() -> io::Result<()> {
+    let (storage, _, _) = load();
+    let storage = storage.unwrap_or_else(|| die("No data directory found"));
+    let label = storage.undo()?;
+    print_json(&serde_json::json!({
+        "restored_before": label,
+    }));
+    Ok(())
+}
+
+fn cmd_history() -> io::Result<()> {
+    let (storage, _, _) = load();
+    let storage = storage.unwrap_or_else(|| die("No data directory found"));
+    let entries = storage.list_history();
+    print_json(&entries);
     Ok(())
 }
