@@ -1,6 +1,7 @@
 mod ai;
 mod cli;
 mod llm;
+mod mcp;
 mod model;
 mod storage;
 

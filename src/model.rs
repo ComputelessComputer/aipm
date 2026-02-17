@@ -155,6 +155,16 @@ pub fn children_of(tasks: &[Task], parent_id: Uuid) -> Vec<usize> {
         .collect()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub id: Uuid,
+    pub email_id: String,
+    pub title: String,
+    pub description: String,
+    pub priority: Priority,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Derive a parent's progress from its children.
 ///
 /// - All children Done → Done
