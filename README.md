@@ -43,7 +43,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."   # for Claude models
 export OPENAI_API_KEY="sk-..."           # for OpenAI models
 ```
 
-Or configure in Settings tab (`4`). Default model: `claude-sonnet-4-5`.
+Or configure in Settings tab (`F4`). Default model: `claude-sonnet-4-5`.
 
 ## Usage
 
@@ -56,7 +56,7 @@ aipm "create three tasks for the auth feature"
 aipm suggestions sync --limit 5
 ```
 
-**Keybindings**: Press `1/2/3/4/0` to switch tabs. Full vim-style navigation (`hjkl`, arrows, etc.).
+**Keybindings**: Press `F1/F2/F3/F4/F12` to switch tabs. Full vim-style navigation (`hjkl`, arrows, etc.).
 
 ## Documentation
 

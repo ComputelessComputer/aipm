@@ -6,7 +6,7 @@ The email suggestions feature integrates with Apple Mail via the Model Context P
 
 - **Background polling**: Automatically checks for new unread emails every 60 seconds
 - **AI filtering**: Uses LLM to identify actionable emails and filter out noise (sales, marketing, etc.)
-- **Suggestions tab**: View suggested tasks in the app (press `0` to access)
+- **Suggestions tab**: View suggested tasks in the app (press `F12` to access)
 - **Archive detection**: Automatically removes suggestions and tasks when you archive emails in Mail.app
 - **CLI commands**: Sync emails and create tasks from the command line
 
@@ -21,7 +21,7 @@ Follow the installation instructions to set up the Python script.
 
 ### 2. Configure MCP in aipm
 
-In the Settings tab (`4`), configure:
+In the Settings tab (`F4`), configure:
 - **MCP Enabled**: Toggle to `On`
 - **MCP Python Path**: Path to Python executable (e.g. `/usr/bin/python3`)
 - **MCP Script Path**: Path to the MCP server script

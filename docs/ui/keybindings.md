@@ -7,11 +7,11 @@ aipm is fully keyboard-driven with vim-style navigation options.
 | Key | Action |
 |-----|--------|
 | `Ctrl-C` | Quit application |
-| `1` | Switch to Buckets tab |
-| `2` | Switch to Timeline tab |
-| `3` | Switch to Kanban tab |
-| `4` | Switch to Settings tab |
-| `0` | Switch to Suggestions tab |
+| `F1` | Switch to Buckets tab |
+| `F2` | Switch to Timeline tab |
+| `F3` | Switch to Kanban tab |
+| `F4` | Switch to Settings tab |
+| `F12` | Switch to Suggestions tab |
 
 ## Tab Bar Focus
 

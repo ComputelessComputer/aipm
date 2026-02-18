@@ -663,42 +663,40 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_tabs_key(app, key);
     }
 
-    // Tab switching with 1/2/3/4 (not while typing in input).
-    if app.focus != Focus::Input {
-        match key.code {
-            KeyCode::Char('1') => {
-                app.tab = Tab::Default;
-                app.focus = Focus::Input;
-                app.status = None;
-                return Ok(false);
-            }
-            KeyCode::Char('2') => {
-                app.tab = Tab::Timeline;
-                app.focus = Focus::Board;
-                app.status = None;
-                return Ok(false);
-            }
-            KeyCode::Char('3') => {
-                app.tab = Tab::Kanban;
-                app.focus = Focus::Board;
-                app.status = None;
-                return Ok(false);
-            }
-            KeyCode::Char('4') => {
-                app.tab = Tab::Settings;
-                app.focus = Focus::Board;
-                app.settings_editing = false;
-                app.status = None;
-                return Ok(false);
-            }
-            KeyCode::Char('0') => {
-                app.tab = Tab::Suggestions;
-                app.focus = Focus::Board;
-                app.status = None;
-                return Ok(false);
-            }
-            _ => {}
+    // Tab switching with F1/F2/F3/F4/F12.
+    match key.code {
+        KeyCode::F(1) => {
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            app.status = None;
+            return Ok(false);
         }
+        KeyCode::F(2) => {
+            app.tab = Tab::Timeline;
+            app.focus = Focus::Board;
+            app.status = None;
+            return Ok(false);
+        }
+        KeyCode::F(3) => {
+            app.tab = Tab::Kanban;
+            app.focus = Focus::Board;
+            app.status = None;
+            return Ok(false);
+        }
+        KeyCode::F(4) => {
+            app.tab = Tab::Settings;
+            app.focus = Focus::Board;
+            app.settings_editing = false;
+            app.status = None;
+            return Ok(false);
+        }
+        KeyCode::F(12) => {
+            app.tab = Tab::Suggestions;
+            app.focus = Focus::Board;
+            app.status = None;
+            return Ok(false);
+        }
+        _ => {}
     }
 
     match app.tab {
@@ -725,28 +723,28 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             };
             app.status = None;
         }
-        KeyCode::Char('1') => {
+        KeyCode::F(1) => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
         }
-        KeyCode::Char('2') => {
+        KeyCode::F(2) => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('3') => {
+        KeyCode::F(3) => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('4') => {
+        KeyCode::F(4) => {
             app.tab = Tab::Settings;
             app.focus = Focus::Board;
             app.settings_editing = false;
             app.status = None;
         }
-        KeyCode::Char('0') => {
+        KeyCode::F(12) => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -3966,11 +3964,11 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     let mut x: u16 = x_margin as u16;
     let tabs_focused = app.focus == Focus::Tabs;
     for (tab, label) in [
-        (Tab::Default, "1 Buckets"),
-        (Tab::Timeline, "2 Timeline"),
-        (Tab::Kanban, "3 Kanban"),
-        (Tab::Settings, "4 Settings"),
-        (Tab::Suggestions, "0 Suggestions"),
+        (Tab::Default, "F1 Buckets"),
+        (Tab::Timeline, "F2 Timeline"),
+        (Tab::Kanban, "F3 Kanban"),
+        (Tab::Settings, "F4 Settings"),
+        (Tab::Suggestions, "F12 Suggestions"),
     ]
     .iter()
     {
@@ -5012,11 +5010,11 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
             let task = app.tasks.iter().find(|t| t.id == *id).unwrap();
             let is_selected = is_active_col && app.kanban_selected == Some(*id);
 
-            // Priority bullet.
+            // Priority bullet (shapes, not dots — dots are used for status).
             let bullet = match task.priority {
-                Priority::Critical => "◉",
-                Priority::High => "●",
-                Priority::Medium => "○",
+                Priority::Critical => "▲",
+                Priority::High => "◆",
+                Priority::Medium => "■",
                 Priority::Low => "·",
             };
 
@@ -5052,11 +5050,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
             // ── Line 1: priority bullet + title ──
             queue!(stdout, MoveTo(cx, y_cur))?;
             if is_selected {
-                let full = if task.is_child() {
-                    format!(" {} ↳ {}", bullet, task.title)
-                } else {
-                    format!(" {} {}", bullet, task.title)
-                };
+                let full = format!(" {} {}", bullet, task.title);
                 queue!(
                     stdout,
                     SetForegroundColor(Color::Black),
@@ -5073,11 +5067,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                     ResetColor
                 )?;
                 let title_max = col_width.saturating_sub(prefix.width());
-                let title_text = if task.is_child() {
-                    format!("↳ {}", task.title)
-                } else {
-                    task.title.clone()
-                };
+                let title_text = task.title.clone();
                 queue!(stdout, Print(clamp_text(&title_text, title_max)))?;
             }
 
@@ -5133,11 +5123,11 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
         stdout,
         MoveTo(x, legend_y),
         SetForegroundColor(Color::DarkGrey),
-        Print("◉ critical  "),
+        Print("▲ critical  "),
         SetForegroundColor(Color::Yellow),
-        Print("● high  "),
+        Print("◆ high  "),
         ResetColor,
-        Print("○ medium  "),
+        Print("■ medium  "),
         SetForegroundColor(Color::DarkGrey),
         Print("· low"),
         ResetColor
@@ -5148,7 +5138,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • 1/2 tabs • q quit"),
+        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • F1-F4 tabs • q quit"),
         ResetColor
     )?;
 
@@ -5315,7 +5305,7 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let help = if app.settings_editing {
         "enter save \u{2022} esc cancel"
     } else {
-        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} 1/2/3 tabs \u{2022} q quit"
+        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} F1-F4 tabs \u{2022} q quit"
     };
     queue!(
         stdout,
