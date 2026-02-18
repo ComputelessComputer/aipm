@@ -10,8 +10,8 @@ aipm is fully keyboard-driven with vim-style navigation options.
 | `1` | Switch to Buckets tab |
 | `2` | Switch to Timeline tab |
 | `3` | Switch to Kanban tab |
-| `4` | Switch to Settings tab |
-| `0` | Switch to Suggestions tab |
+| `4` | Switch to Suggestions tab |
+| `0` | Switch to Settings tab |
 
 ## Tab Bar Focus
 

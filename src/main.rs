@@ -54,19 +54,19 @@ impl Tab {
         match self {
             Tab::Default => Tab::Timeline,
             Tab::Timeline => Tab::Kanban,
-            Tab::Kanban => Tab::Settings,
-            Tab::Settings => Tab::Suggestions,
-            Tab::Suggestions => Tab::Default,
+            Tab::Kanban => Tab::Suggestions,
+            Tab::Suggestions => Tab::Settings,
+            Tab::Settings => Tab::Default,
         }
     }
 
     fn prev(self) -> Tab {
         match self {
-            Tab::Default => Tab::Suggestions,
+            Tab::Default => Tab::Settings,
             Tab::Timeline => Tab::Default,
             Tab::Kanban => Tab::Timeline,
-            Tab::Settings => Tab::Kanban,
-            Tab::Suggestions => Tab::Settings,
+            Tab::Suggestions => Tab::Kanban,
+            Tab::Settings => Tab::Suggestions,
         }
     }
 }
@@ -724,15 +724,15 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('4') => {
-            app.tab = Tab::Settings;
+            app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
-            app.settings_editing = false;
             app.status = None;
             return Ok(false);
         }
         KeyCode::Char('0') => {
-            app.tab = Tab::Suggestions;
+            app.tab = Tab::Settings;
             app.focus = Focus::Board;
+            app.settings_editing = false;
             app.status = None;
             return Ok(false);
         }
@@ -780,14 +780,14 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.status = None;
         }
         KeyCode::Char('4') => {
-            app.tab = Tab::Settings;
+            app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
-            app.settings_editing = false;
             app.status = None;
         }
         KeyCode::Char('0') => {
-            app.tab = Tab::Suggestions;
+            app.tab = Tab::Settings;
             app.focus = Focus::Board;
+            app.settings_editing = false;
             app.status = None;
         }
         _ => {}
@@ -4060,7 +4060,7 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
         (Tab::Default, "1 Buckets"),
         (Tab::Timeline, "2 Timeline"),
         (Tab::Kanban, "3 Kanban"),
-        (Tab::Settings, "4 Settings"),
+        (Tab::Suggestions, "4 Suggestions"),
     ];
 
     for (tab, label) in left_tabs {
@@ -4069,14 +4069,14 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
         x += rendered.width() as u16 + 2;
     }
 
-    let right_label = "0 Suggestions";
+    let right_label = "0 Settings";
     let right_rendered = format!(" {} ", right_label);
     let right_x =
         (width.saturating_sub(x_margin) as u16).saturating_sub(right_rendered.width() as u16);
     render_tab_label(
         stdout,
         right_label,
-        app.tab == Tab::Suggestions,
+        app.tab == Tab::Settings,
         tabs_focused,
         right_x,
     )?;
