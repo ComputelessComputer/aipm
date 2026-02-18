@@ -4431,6 +4431,7 @@ fn render_bucket_column(
                     break;
                 }
                 let child = &app.tasks[child_idx];
+                let short_id = child.id.to_string().chars().take(8).collect::<String>();
                 let icon = match child.progress {
                     Progress::Done => "\u{25cf}",
                     Progress::InProgress => "\u{25d0}",
@@ -4438,19 +4439,23 @@ fn render_bucket_column(
                     Progress::Backlog => "\u{25cc}",
                 };
                 let prefix_str = " \u{21b3} ";
-                let title_max = width.saturating_sub(prefix_str.width() + icon.width() + 1);
+                let id_str = format!("{} ", short_id);
+                let title_max =
+                    width.saturating_sub(prefix_str.width() + id_str.width() + icon.width() + 1);
                 let title_text = clamp_text(&child.title, title_max);
                 queue!(
                     stdout,
                     MoveTo(x, y_cursor),
                     SetForegroundColor(Color::DarkGrey),
                     Print(prefix_str),
+                    Print(&id_str),
                     SetForegroundColor(progress_color(child.progress)),
                     Print(icon),
                     SetForegroundColor(Color::DarkGrey),
                     Print(format!(" {}", title_text)),
                 )?;
-                let used = prefix_str.width() + icon.width() + 1 + title_text.width();
+                let used =
+                    prefix_str.width() + id_str.width() + icon.width() + 1 + title_text.width();
                 let pad = width.saturating_sub(used);
                 if pad > 0 {
                     queue!(stdout, Print(" ".repeat(pad)))?;
