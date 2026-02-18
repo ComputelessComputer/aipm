@@ -6,7 +6,7 @@ The email suggestions feature integrates directly with Apple Mail via AppleScrip
 
 - **Background polling**: Automatically checks for new unread emails every 60 seconds
 - **AI filtering**: Uses LLM to identify actionable emails and filter out noise (sales, marketing, etc.)
-- **Suggestions tab**: View suggested tasks in the app (press `Alt+0` to access)
+- **Suggestions tab**: View suggested tasks in the app (press `0` to access)
 - **Archive detection**: Automatically removes suggestions and tasks when you archive emails in Mail.app
 - **CLI commands**: Sync emails and create tasks from the command line
 
@@ -14,7 +14,7 @@ The email suggestions feature integrates directly with Apple Mail via AppleScrip
 
 ### 1. Enable Email Suggestions
 
-Press `Alt+0` to open the Suggestions tab, then press `e` to toggle email suggestions on.
+Press `0` to open the Suggestions tab, then press `e` to toggle email suggestions on.
 
 Or via CLI:
 ```sh
@@ -27,7 +27,7 @@ macOS will prompt you to allow aipm to control Mail.app the first time. Grant th
 
 ## Using the Suggestions Tab
 
-Press `Alt+0` to open the Suggestions tab (rightmost tab).
+Press `0` to open the Suggestions tab (rightmost tab).
 
 ### Keybindings
 
@@ -131,7 +131,7 @@ Background Thread
   ↓ (AI Filter)
 Suggestions Channel
   ↓ (EmailEvent::NewSuggestion)
-App State → Suggestions Tab (Alt+0)
+App State → Suggestions Tab (0)
   ↓ (User accepts)
 Tasks
 ```
@@ -140,7 +140,7 @@ Tasks
 
 ### No suggestions appearing
 
-1. Check email suggestions are enabled in the Suggestions tab (`Alt+0`, press `e`)
+1. Check email suggestions are enabled in the Suggestions tab (`0`, press `e`)
 2. Ensure Mail.app has unread emails
 3. Check that aipm has Automation permission for Mail.app (System Settings → Privacy & Security → Automation)
 
