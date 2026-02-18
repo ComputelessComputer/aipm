@@ -522,14 +522,8 @@ fn cmd_settings_update(args: &[String]) -> io::Result<()> {
     if let Some(v) = find_flag(args, "--show-done") {
         settings.show_done = parse_bool_flag(&v);
     }
-    if let Some(v) = find_flag(args, "--mcp-python-path") {
-        settings.mcp_python_path = v;
-    }
-    if let Some(v) = find_flag(args, "--mcp-script-path") {
-        settings.mcp_script_path = v;
-    }
-    if let Some(v) = find_flag(args, "--mcp-enabled") {
-        settings.mcp_enabled = parse_bool_flag(&v);
+    if let Some(v) = find_flag(args, "--email-suggestions") {
+        settings.email_suggestions_enabled = parse_bool_flag(&v);
     }
 
     save_settings(&storage, &settings);
@@ -574,19 +568,11 @@ fn run_suggestions_cmd(args: &[String]) -> io::Result<()> {
 
 fn cmd_suggestions_list() -> io::Result<()> {
     let (_, _, settings) = load();
-    if !settings.mcp_enabled {
-        die("MCP is not enabled. Enable it in settings first.");
-    }
-    if settings.mcp_python_path.trim().is_empty() || settings.mcp_script_path.trim().is_empty() {
-        die("MCP Python path or script path not configured.");
+    if !settings.email_suggestions_enabled {
+        die("Email suggestions are not enabled. Enable it in the Suggestions tab (F12) first.");
     }
 
-    let client = crate::mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path)
-        .map_err(|e| io::Error::other(e))?;
-
-    let emails = client
-        .get_recent_emails(10)
-        .map_err(|e| io::Error::other(e))?;
+    let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
 
     let unread: Vec<_> = emails.iter().filter(|e| !e.is_read).collect();
 
@@ -624,19 +610,11 @@ fn cmd_suggestions_sync(args: &[String]) -> io::Result<()> {
         s.snapshot("suggestions sync");
     }
 
-    if !settings.mcp_enabled {
-        die("MCP is not enabled. Enable it in settings first.");
-    }
-    if settings.mcp_python_path.trim().is_empty() || settings.mcp_script_path.trim().is_empty() {
-        die("MCP Python path or script path not configured.");
+    if !settings.email_suggestions_enabled {
+        die("Email suggestions are not enabled. Enable it in the Suggestions tab (F12) first.");
     }
 
-    let client = crate::mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path)
-        .map_err(|e| io::Error::other(e))?;
-
-    let emails = client
-        .get_recent_emails(10)
-        .map_err(|e| io::Error::other(e))?;
+    let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
 
     let limit = if let Some(limit_str) = find_flag(args, "--limit") {
         limit_str.parse::<usize>().unwrap_or(10)

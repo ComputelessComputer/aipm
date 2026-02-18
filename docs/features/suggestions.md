@@ -1,6 +1,6 @@
 # Email Suggestions
 
-The email suggestions feature integrates with Apple Mail via the Model Context Protocol (MCP) to automatically surface actionable tasks from your inbox.
+The email suggestions feature integrates directly with Apple Mail via AppleScript to automatically surface actionable tasks from your inbox.
 
 ## Overview
 
@@ -12,39 +12,28 @@ The email suggestions feature integrates with Apple Mail via the Model Context P
 
 ## Setup
 
-### 1. Install Apple Mail MCP Server
+### 1. Enable Email Suggestions
 
-Install the Apple Mail MCP server from:
-https://playbooks.com/mcp/patrickfreyer/apple-mail-mcp
+Press `F12` to open the Suggestions tab, then press `e` to toggle email suggestions on.
 
-Follow the installation instructions to set up the Python script.
-
-### 2. Configure MCP in aipm
-
-In the Settings tab (`F4`), configure:
-- **MCP Enabled**: Toggle to `On`
-- **MCP Python Path**: Path to Python executable (e.g. `/usr/bin/python3`)
-- **MCP Script Path**: Path to the MCP server script
-
-Or set via environment variables:
+Or via CLI:
 ```sh
-export AIPM_MCP_ENABLED=true
-export AIPM_MCP_PYTHON_PATH=/usr/bin/python3
-export AIPM_MCP_SCRIPT_PATH=/path/to/apple-mail-mcp.py
+aipm settings --email-suggestions true
 ```
 
-### 3. Grant Mail.app Access
+### 2. Grant Mail.app Access
 
-The MCP server needs permission to access Mail.app. macOS will prompt you the first time.
+macOS will prompt you to allow aipm to control Mail.app the first time. Grant the permission.
 
 ## Using the Suggestions Tab
 
-Press `0` to open the Suggestions tab (rightmost tab).
+Press `F12` to open the Suggestions tab (rightmost tab).
 
 ### Keybindings
 
 | Key | Action |
 |-----|--------|
+| `e` | Toggle email suggestions on/off |
 | `↑/k` | Navigate up |
 | `↓/j` | Navigate down |
 | `Enter` | Create task from suggestion (moves to Backlog) |
@@ -89,12 +78,11 @@ Options:
 
 Example:
 ```sh
-# Create tasks from up to 5 actionable emails
 aipm suggestions sync --limit 5
 ```
 
 The command:
-1. Fetches recent unread emails via MCP
+1. Fetches recent unread emails from Apple Mail
 2. Runs AI filtering on each email
 3. Creates tasks in the first bucket (Backlog) for actionable emails
 4. Returns JSON with count of created tasks
@@ -138,12 +126,12 @@ This keeps your task list synchronized with your inbox state.
 
 ```
 Mail.app
-  ↓ (MCP JSON-RPC)
+  ↓ (AppleScript / osascript)
 Background Thread
   ↓ (AI Filter)
 Suggestions Channel
   ↓ (EmailEvent::NewSuggestion)
-App State → Suggestions Tab (Tab 0)
+App State → Suggestions Tab (F12)
   ↓ (User accepts)
 Tasks
 ```
@@ -152,10 +140,9 @@ Tasks
 
 ### No suggestions appearing
 
-1. Check MCP is enabled in Settings (`4`)
-2. Verify Python path and script path are correct
-3. Ensure Mail.app has unread emails
-4. Check that Python script has Mail.app permissions
+1. Check email suggestions are enabled in the Suggestions tab (`F12`, press `e`)
+2. Ensure Mail.app has unread emails
+3. Check that aipm has Automation permission for Mail.app (System Settings → Privacy & Security → Automation)
 
 ### Suggestions not updating
 
@@ -176,4 +163,4 @@ Tasks
 - Email IDs are stored in a runtime map to track task-email associations
 - Map is cleared when the app exits
 
-If privacy is a concern, you can disable MCP in Settings and use the CLI commands manually instead of background polling.
+If privacy is a concern, you can disable email suggestions and use the CLI commands manually instead of background polling.

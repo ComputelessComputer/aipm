@@ -40,11 +40,7 @@ pub struct AiSettings {
     #[serde(default = "default_buckets")]
     pub buckets: Vec<BucketDef>,
     #[serde(default)]
-    pub mcp_python_path: String,
-    #[serde(default)]
-    pub mcp_script_path: String,
-    #[serde(default)]
-    pub mcp_enabled: bool,
+    pub email_suggestions_enabled: bool,
 }
 
 fn default_owner_name() -> String {
@@ -88,9 +84,7 @@ impl Default for AiSettings {
             show_in_progress: true,
             show_done: false,
             buckets: default_buckets(),
-            mcp_python_path: String::new(),
-            mcp_script_path: String::new(),
-            mcp_enabled: false,
+            email_suggestions_enabled: false,
         }
     }
 }

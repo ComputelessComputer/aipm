@@ -22,7 +22,7 @@ A terminal-based AI-powered project manager built in Rust.
 
 - **Multiple views**: Buckets (columns), Timeline (chronological), Kanban (progress stages)
 - **AI triage**: Natural language → create/update/delete/decompose/bulk-update tasks via tool calls
-- **Email suggestions**: MCP integration with Apple Mail surfaces actionable inbox items
+- **Email suggestions**: Native Apple Mail integration surfaces actionable inbox items
 - **URL context**: Auto-fetch GitHub PRs/issues or any URL content
 - **CLI mode**: Headless commands for scripting (`task list`, `suggestions sync`, etc.)
 - **Undo/history**: Snapshot before every operation, rollback anytime

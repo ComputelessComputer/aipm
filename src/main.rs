@@ -1,7 +1,7 @@
 mod ai;
 mod cli;
 mod llm;
-mod mcp;
+mod mail;
 mod model;
 mod storage;
 
@@ -252,6 +252,9 @@ struct App {
 
     suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
     task_email_map: std::collections::HashMap<Uuid, String>,
+
+    esc_count: u8,
+    esc_last: Instant,
 }
 
 struct TerminalGuard;
@@ -272,28 +275,19 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn spawn_mcp_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
+fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        if !settings.mcp_enabled
-            || settings.mcp_python_path.trim().is_empty()
-            || settings.mcp_script_path.trim().is_empty()
-        {
+        if !settings.email_suggestions_enabled {
             return;
         }
-
-        let client =
-            match mcp::McpClient::spawn(&settings.mcp_python_path, &settings.mcp_script_path) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
 
         let mut tracked_email_ids = std::collections::HashSet::<String>::new();
 
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
 
-            let emails = match client.get_recent_emails(10) {
+            let emails = match mail::get_recent_emails(10) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -482,10 +476,12 @@ fn main() -> io::Result<()> {
         suggestions_scroll: 0,
         suggestions_rx: None,
         task_email_map: std::collections::HashMap::new(),
+        esc_count: 0,
+        esc_last: Instant::now(),
     };
 
     app.update_rx = Some(spawn_update_check());
-    app.suggestions_rx = Some(spawn_mcp_poller(app.settings.clone()));
+    app.suggestions_rx = Some(spawn_email_poller(app.settings.clone()));
 
     ensure_default_selection(&mut app);
 
@@ -628,6 +624,52 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     // Ctrl-C always quits.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(true);
+    }
+
+    // Esc×3: cancel AI and revert changes.
+    let ai_active = matches!(&app.status, Some((_, _, true)));
+    if key.code == KeyCode::Esc && ai_active {
+        if app.esc_last.elapsed() > Duration::from_millis(1500) {
+            app.esc_count = 0;
+        }
+        app.esc_count += 1;
+        app.esc_last = Instant::now();
+
+        if app.esc_count >= 3 {
+            app.ai = None;
+            if let Some(storage) = &app.storage {
+                if let Ok(label) = storage.undo() {
+                    if let Ok(fresh) = storage.reload_tasks() {
+                        app.tasks = fresh;
+                    }
+                    app.status = Some((
+                        format!("AI cancelled — reverted \"{}\"", label),
+                        Instant::now(),
+                        false,
+                    ));
+                } else {
+                    app.status = Some(("AI cancelled".to_string(), Instant::now(), false));
+                }
+            } else {
+                app.status = Some(("AI cancelled".to_string(), Instant::now(), false));
+            }
+            app.ai = llm::AiRuntime::from_settings(&app.settings);
+            app.esc_count = 0;
+            return Ok(false);
+        }
+        let remaining = 3 - app.esc_count;
+        app.status = Some((
+            format!(
+                "Press Esc {} more time{} to cancel AI and revert",
+                remaining,
+                if remaining == 1 { "" } else { "s" }
+            ),
+            Instant::now(),
+            true,
+        ));
+        return Ok(false);
+    } else if key.code != KeyCode::Esc {
+        app.esc_count = 0;
     }
 
     // Toast dismissal intercepts all keys (skip for persistent toasts).
@@ -2872,6 +2914,14 @@ fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.focus = Focus::Input;
             return Ok(false);
         }
+        KeyCode::Char('e') => {
+            app.settings.email_suggestions_enabled = !app.settings.email_suggestions_enabled;
+            persist_settings(app);
+            if app.settings.email_suggestions_enabled && app.suggestions_rx.is_none() {
+                app.suggestions_rx = Some(spawn_email_poller(app.settings.clone()));
+            }
+            return Ok(false);
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.suggestions.is_empty() {
                 return Ok(false);
@@ -2938,6 +2988,10 @@ fn poll_ai(app: &mut App) -> bool {
 
     if results.is_empty() {
         return false;
+    }
+
+    if let Some(storage) = &app.storage {
+        storage.snapshot("ai triage");
     }
 
     let mut changed = false;
@@ -3957,53 +4011,75 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
     Ok(())
 }
 
+fn render_tab_label(
+    stdout: &mut Stdout,
+    label: &str,
+    is_active: bool,
+    tabs_focused: bool,
+    x: u16,
+) -> io::Result<()> {
+    let rendered = format!(" {} ", label);
+    queue!(stdout, MoveTo(x, 1))?;
+    if is_active && tabs_focused {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::Black),
+            SetBackgroundColor(Color::White),
+            SetAttribute(Attribute::Bold),
+            Print(&rendered),
+            SetAttribute(Attribute::Reset),
+            ResetColor
+        )?;
+    } else if is_active {
+        queue!(
+            stdout,
+            SetAttribute(Attribute::Bold),
+            Print(&rendered),
+            SetAttribute(Attribute::Reset)
+        )?;
+    } else {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(&rendered),
+            ResetColor
+        )?;
+    }
+    Ok(())
+}
+
 fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     let width = cols as usize;
     let num_buckets = app.settings.buckets.len().max(1);
     let (x_margin, _) = choose_layout(width, num_buckets);
     let mut x: u16 = x_margin as u16;
     let tabs_focused = app.focus == Focus::Tabs;
-    for (tab, label) in [
+
+    let left_tabs: &[(Tab, &str)] = &[
         (Tab::Default, "F1 Buckets"),
         (Tab::Timeline, "F2 Timeline"),
         (Tab::Kanban, "F3 Kanban"),
         (Tab::Settings, "F4 Settings"),
-        (Tab::Suggestions, "F12 Suggestions"),
-    ]
-    .iter()
-    {
-        let is_active = *tab == app.tab;
+    ];
+
+    for (tab, label) in left_tabs {
         let rendered = format!(" {} ", label);
-        queue!(stdout, MoveTo(x, 1))?;
-        if is_active && tabs_focused {
-            // Inverted highlight when tab bar is focused.
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Black),
-                SetBackgroundColor(Color::White),
-                SetAttribute(Attribute::Bold),
-                Print(&rendered),
-                SetAttribute(Attribute::Reset),
-                ResetColor
-            )?;
-        } else if is_active {
-            // Subtle indicator when inside tab content.
-            queue!(
-                stdout,
-                SetAttribute(Attribute::Bold),
-                Print(&rendered),
-                SetAttribute(Attribute::Reset)
-            )?;
-        } else {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::DarkGrey),
-                Print(&rendered),
-                ResetColor
-            )?;
-        }
+        render_tab_label(stdout, label, *tab == app.tab, tabs_focused, x)?;
         x += rendered.width() as u16 + 2;
     }
+
+    let right_label = "F12 Suggestions";
+    let right_rendered = format!(" {} ", right_label);
+    let right_x =
+        (width.saturating_sub(x_margin) as u16).saturating_sub(right_rendered.width() as u16);
+    render_tab_label(
+        stdout,
+        right_label,
+        app.tab == Tab::Suggestions,
+        tabs_focused,
+        right_x,
+    )?;
+
     Ok(())
 }
 
@@ -4148,13 +4224,19 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         ResetColor
     )?;
 
-    // Help line with context indicator on the right.
+    // Help line with context usage bar on the right.
     let help_text = "tab/i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear";
     let context_tokens = estimate_context_tokens(&app.tasks, &app.chat_history);
-    let context_indicator = format!("ctx ~{}k", context_tokens / 1000);
-    let help_left_max = content_width.saturating_sub(context_indicator.len() + 2);
+    let max_tokens: usize = 200_000;
+    let ratio = (context_tokens as f64 / max_tokens as f64).clamp(0.0, 1.0);
+
+    let bar_width: usize = 8;
+    let filled = ((ratio * bar_width as f64).round() as usize).min(bar_width);
+    let label = format!("~{}k", context_tokens / 1000);
+    let bar_total = bar_width + 2 + label.len(); // [] + label
+    let help_left_max = content_width.saturating_sub(bar_total + 2);
     let help_left = clamp_text(help_text, help_left_max);
-    let padding = content_width.saturating_sub(help_left.width() + context_indicator.len());
+    let padding = content_width.saturating_sub(help_left.width() + bar_total);
 
     queue!(
         stdout,
@@ -4162,7 +4244,30 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
         SetForegroundColor(Color::DarkGrey),
         Print(&help_left),
         Print(" ".repeat(padding)),
-        Print(&context_indicator),
+        Print(&label),
+        Print("["),
+    )?;
+    for i in 0..bar_width {
+        let t = i as f64 / bar_width as f64;
+        let color = if t < ratio {
+            let r = (255.0 * (t * 2.0).min(1.0)) as u8;
+            let g = (255.0 * (1.0 - t).min(1.0)) as u8;
+            let b = (255.0 * (1.0 - t * 3.0).max(0.0)) as u8;
+            Color::Rgb { r, g, b }
+        } else {
+            Color::Rgb {
+                r: 60,
+                g: 60,
+                b: 60,
+            }
+        };
+        let ch = if i < filled { "█" } else { "░" };
+        queue!(stdout, SetForegroundColor(color), Print(ch))?;
+    }
+    queue!(
+        stdout,
+        SetForegroundColor(Color::DarkGrey),
+        Print("]"),
         ResetColor
     )?;
 
@@ -4320,21 +4425,24 @@ fn render_bucket_column(
                 )?;
             }
 
-            // Colored gauge for progress line (non-selected only).
+            // Colored gauge + priority for progress line (non-selected only).
             if line_idx == 4 && !is_selected {
                 let gc = progress_color(task.progress);
+                let pc = priority_color(task.priority);
+                let pri_icon = priority_icon(task.priority);
                 let gauge_str = format!(" {}", gauge);
-                let rest = format!(" {} │ {}", task.progress.title(), task.priority.title());
-                let max_rest = width.saturating_sub(gauge_str.width());
-                let rest_clamped = clamp_text(&rest, max_rest);
+                let progress_part = format!(" {} │ ", task.progress.title());
+                let priority_part = format!("{} {}", pri_icon, task.priority.title());
                 queue!(
                     stdout,
                     SetForegroundColor(gc),
                     Print(&gauge_str),
                     SetForegroundColor(Color::DarkGrey),
-                    Print(&rest_clamped),
+                    Print(&progress_part),
+                    SetForegroundColor(pc),
+                    Print(&priority_part),
                 )?;
-                let used = gauge_str.width() + rest_clamped.width();
+                let used = gauge_str.width() + progress_part.width() + priority_part.width();
                 let pad = width.saturating_sub(used);
                 if pad > 0 {
                     queue!(stdout, Print(" ".repeat(pad)))?;
@@ -5344,17 +5452,46 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
         SetAttribute(Attribute::Reset)
     )?;
 
-    if app.suggestions.is_empty() {
+    let enabled = app.settings.email_suggestions_enabled;
+    let status_label = if enabled { "On" } else { "Off" };
+    let status_color = if enabled {
+        Color::Green
+    } else {
+        Color::DarkGrey
+    };
+    queue!(
+        stdout,
+        MoveTo(x, 5),
+        Print(" Apple Mail: "),
+        SetForegroundColor(status_color),
+        SetAttribute(Attribute::Bold),
+        Print(status_label),
+        SetAttribute(Attribute::Reset),
+        ResetColor,
+        SetForegroundColor(Color::DarkGrey),
+        Print("  (e to toggle)"),
+        ResetColor
+    )?;
+
+    if !enabled {
         queue!(
             stdout,
-            MoveTo(x, 5),
+            MoveTo(x, 7),
             SetForegroundColor(Color::DarkGrey),
-            Print(" No suggestions yet."),
+            Print(" Enable to poll Apple Mail for actionable emails."),
+            ResetColor
+        )?;
+    } else if app.suggestions.is_empty() {
+        queue!(
+            stdout,
+            MoveTo(x, 7),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" No suggestions yet. Polling every 60s."),
             ResetColor
         )?;
     } else {
         for (i, suggestion) in app.suggestions.iter().enumerate() {
-            let y = 5 + (i * 4) as u16;
+            let y = 7 + (i * 4) as u16;
             let is_selected = i == app.suggestions_selected;
 
             let priority_bullet = match suggestion.priority {
@@ -5364,7 +5501,7 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
                 Priority::Low => "\u{00b7}",
             };
 
-            let priority_color = priority_color(suggestion.priority);
+            let pcolor = priority_color(suggestion.priority);
 
             queue!(stdout, MoveTo(x, y))?;
             if is_selected {
@@ -5384,7 +5521,7 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
             } else {
                 queue!(
                     stdout,
-                    SetForegroundColor(priority_color),
+                    SetForegroundColor(pcolor),
                     Print(format!(" {} ", priority_bullet)),
                     ResetColor,
                     Print(clamp_text(
@@ -5411,7 +5548,7 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("\u{2191}/\u{2193} navigate \u{2022} enter create task \u{2022} d/x dismiss \u{2022} q quit"),
+        Print("e toggle email \u{2022} \u{2191}/\u{2193} navigate \u{2022} enter create task \u{2022} d/x dismiss \u{2022} q quit"),
         ResetColor
     )?;
 
@@ -6117,6 +6254,15 @@ fn priority_color(priority: Priority) -> Color {
         Priority::High => Color::Yellow,
         Priority::Medium => Color::White,
         Priority::Low => Color::DarkGrey,
+    }
+}
+
+fn priority_icon(priority: Priority) -> &'static str {
+    match priority {
+        Priority::Critical => "▲",
+        Priority::High => "◆",
+        Priority::Medium => "■",
+        Priority::Low => "·",
     }
 }
 
@@ -6845,7 +6991,7 @@ fn print_help() {
     println!("  aipm \"<instruction>\"             Run AI instruction headlessly (no TUI)");
     println!("  aipm task <command>              Task CRUD (see below)");
     println!("  aipm bucket <command>            Bucket CRUD (see below)");
-    println!("  aipm suggestions <command>       Email suggestions via MCP (see below)");
+    println!("  aipm suggestions <command>       Email suggestions via Apple Mail (see below)");
     println!("  aipm ingest --image <path>       Extract tasks from an image via AI");
     println!("  aipm ingest --clipboard          Extract tasks from clipboard image (macOS)");
     println!("  aipm undo                        Undo the last CLI/AI operation");
@@ -6871,7 +7017,7 @@ fn print_help() {
     println!("  aipm bucket rename <old> <new>");
     println!("  aipm bucket delete <name>        Moves tasks to first remaining bucket");
     println!();
-    println!("Suggestions commands (MCP + AI):");
+    println!("Suggestions commands (Apple Mail + AI):");
     println!("  aipm suggestions list            List unread emails and show AI filtering");
     println!("  aipm suggestions sync [--limit N] Create tasks from actionable emails");
     println!();
