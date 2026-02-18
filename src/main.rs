@@ -248,7 +248,6 @@ struct App {
 
     suggestions: Vec<Suggestion>,
     suggestions_selected: usize,
-    suggestions_scroll: usize,
 
     suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
     task_email_map: std::collections::HashMap<Uuid, String>,
@@ -473,7 +472,6 @@ fn main() -> io::Result<()> {
         update_rx: None,
         suggestions: Vec::new(),
         suggestions_selected: 0,
-        suggestions_scroll: 0,
         suggestions_rx: None,
         task_email_map: std::collections::HashMap::new(),
         esc_count: 0,
@@ -705,40 +703,42 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_tabs_key(app, key);
     }
 
-    // Tab switching with F1/F2/F3/F4/F12.
-    match key.code {
-        KeyCode::F(1) => {
-            app.tab = Tab::Default;
-            app.focus = Focus::Input;
-            app.status = None;
-            return Ok(false);
+    // Tab switching with Alt+1/2/3/4/0.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Char('1') => {
+                app.tab = Tab::Default;
+                app.focus = Focus::Input;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('2') => {
+                app.tab = Tab::Timeline;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('3') => {
+                app.tab = Tab::Kanban;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('4') => {
+                app.tab = Tab::Settings;
+                app.focus = Focus::Board;
+                app.settings_editing = false;
+                app.status = None;
+                return Ok(false);
+            }
+            KeyCode::Char('0') => {
+                app.tab = Tab::Suggestions;
+                app.focus = Focus::Board;
+                app.status = None;
+                return Ok(false);
+            }
+            _ => {}
         }
-        KeyCode::F(2) => {
-            app.tab = Tab::Timeline;
-            app.focus = Focus::Board;
-            app.status = None;
-            return Ok(false);
-        }
-        KeyCode::F(3) => {
-            app.tab = Tab::Kanban;
-            app.focus = Focus::Board;
-            app.status = None;
-            return Ok(false);
-        }
-        KeyCode::F(4) => {
-            app.tab = Tab::Settings;
-            app.focus = Focus::Board;
-            app.settings_editing = false;
-            app.status = None;
-            return Ok(false);
-        }
-        KeyCode::F(12) => {
-            app.tab = Tab::Suggestions;
-            app.focus = Focus::Board;
-            app.status = None;
-            return Ok(false);
-        }
-        _ => {}
     }
 
     match app.tab {
@@ -765,28 +765,28 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             };
             app.status = None;
         }
-        KeyCode::F(1) => {
+        KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
         }
-        KeyCode::F(2) => {
+        KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::F(3) => {
+        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::F(4) => {
+        KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.tab = Tab::Settings;
             app.focus = Focus::Board;
             app.settings_editing = false;
             app.status = None;
         }
-        KeyCode::F(12) => {
+        KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -4056,10 +4056,10 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     let tabs_focused = app.focus == Focus::Tabs;
 
     let left_tabs: &[(Tab, &str)] = &[
-        (Tab::Default, "F1 Buckets"),
-        (Tab::Timeline, "F2 Timeline"),
-        (Tab::Kanban, "F3 Kanban"),
-        (Tab::Settings, "F4 Settings"),
+        (Tab::Default, "Alt+1 Buckets"),
+        (Tab::Timeline, "Alt+2 Timeline"),
+        (Tab::Kanban, "Alt+3 Kanban"),
+        (Tab::Settings, "Alt+4 Settings"),
     ];
 
     for (tab, label) in left_tabs {
@@ -4068,7 +4068,7 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
         x += rendered.width() as u16 + 2;
     }
 
-    let right_label = "F12 Suggestions";
+    let right_label = "Alt+0 Suggestions";
     let right_rendered = format!(" {} ", right_label);
     let right_x =
         (width.saturating_sub(x_margin) as u16).saturating_sub(right_rendered.width() as u16);
@@ -5246,7 +5246,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
         stdout,
         MoveTo(x, y_help),
         SetForegroundColor(Color::DarkGrey),
-        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • F1-F4 tabs • q quit"),
+        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • Alt+1-4/0 tabs • q quit"),
         ResetColor
     )?;
 
@@ -5413,7 +5413,7 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let help = if app.settings_editing {
         "enter save \u{2022} esc cancel"
     } else {
-        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} F1-F4 tabs \u{2022} q quit"
+        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} Alt+1-4/0 tabs \u{2022} q quit"
     };
     queue!(
         stdout,
