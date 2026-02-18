@@ -569,7 +569,7 @@ fn run_suggestions_cmd(args: &[String]) -> io::Result<()> {
 fn cmd_suggestions_list() -> io::Result<()> {
     let (_, _, settings) = load();
     if !settings.email_suggestions_enabled {
-        die("Email suggestions are not enabled. Enable it in the Suggestions tab (F12) first.");
+        die("Email suggestions are not enabled. Enable it in the Suggestions tab (Alt+0) first.");
     }
 
     let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
@@ -611,7 +611,7 @@ fn cmd_suggestions_sync(args: &[String]) -> io::Result<()> {
     }
 
     if !settings.email_suggestions_enabled {
-        die("Email suggestions are not enabled. Enable it in the Suggestions tab (F12) first.");
+        die("Email suggestions are not enabled. Enable it in the Suggestions tab (Alt+0) first.");
     }
 
     let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
