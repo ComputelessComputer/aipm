@@ -739,6 +739,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         _ => {}
     }
 
+    if app.focus == Focus::Input {
+        return handle_input_key(app, key);
+    }
+
     match app.tab {
         Tab::Default => handle_default_tab_key(app, key),
         Tab::Timeline => handle_timeline_key(app, key),
@@ -757,10 +761,7 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = app.tab.next();
         }
         KeyCode::Enter | KeyCode::Down | KeyCode::Char('j') => {
-            app.focus = match app.tab {
-                Tab::Default => Focus::Input,
-                _ => Focus::Board,
-            };
+            app.focus = Focus::Board;
             app.status = None;
         }
         KeyCode::Char('1') => {
@@ -3989,6 +3990,8 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
         Tab::Suggestions => render_suggestions_tab(stdout, app, cols, rows)?,
     }
 
+    render_input_bar(stdout, app, cols, rows)?;
+
     if app.bucket_edit_active {
         render_bucket_edit_overlay(stdout, app, cols, rows)?;
     }
@@ -4081,6 +4084,172 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     Ok(())
 }
 
+fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
+    let content_width = width.saturating_sub(x_margin * 2);
+    let x = x_margin as u16;
+
+    let y_sep_top = rows.saturating_sub(4);
+    let y_input = rows.saturating_sub(3);
+    let y_sep_bottom = rows.saturating_sub(2);
+    let y_help = rows.saturating_sub(1);
+
+    let sep = "─".repeat(content_width);
+    queue!(
+        stdout,
+        MoveTo(x, y_sep_top),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&sep),
+        ResetColor
+    )?;
+
+    let prompt = "› ";
+    let max_input = content_width.saturating_sub(prompt.width());
+    let (shown, cursor_vis_offset) = if app.input.is_empty() {
+        (String::new(), 0)
+    } else {
+        input_visible_window(&app.input, app.input_cursor, max_input)
+    };
+
+    queue!(stdout, MoveTo(x, y_input))?;
+    match app.focus {
+        Focus::Input => queue!(stdout, ResetColor)?,
+        Focus::Tabs | Focus::Board | Focus::Edit => {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?
+        }
+    };
+    queue!(stdout, Print(prompt))?;
+
+    if shown.is_empty() {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(pad_to_width(
+                &clamp_text(
+                    "type a task • @<id> edit • /clear resets AI context",
+                    max_input,
+                ),
+                max_input,
+            )),
+            ResetColor
+        )?;
+    } else {
+        queue!(stdout, Print(pad_to_width(&shown, max_input)), ResetColor)?;
+    }
+
+    queue!(
+        stdout,
+        MoveTo(x, y_sep_bottom),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&sep),
+        ResetColor
+    )?;
+
+    // Help line with context usage bar.
+    let help_text = "i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear";
+    let context_tokens = estimate_context_tokens(&app.tasks, &app.chat_history);
+    let max_tokens: usize = 200_000;
+    let ratio = (context_tokens as f64 / max_tokens as f64).clamp(0.0, 1.0);
+
+    let bar_width: usize = 8;
+    let filled = ((ratio * bar_width as f64).round() as usize).min(bar_width);
+    let label = format!("~{}k", context_tokens / 1000);
+    let bar_total = bar_width + 2 + label.len();
+    let help_left_max = content_width.saturating_sub(bar_total + 2);
+    let help_left = clamp_text(help_text, help_left_max);
+    let padding = content_width.saturating_sub(help_left.width() + bar_total);
+
+    queue!(
+        stdout,
+        MoveTo(x, y_help),
+        SetForegroundColor(Color::DarkGrey),
+        Print(&help_left),
+        Print(" ".repeat(padding)),
+        Print(&label),
+        Print("["),
+    )?;
+    for i in 0..bar_width {
+        let t = i as f64 / bar_width as f64;
+        let color = if t < ratio {
+            let r = (255.0 * (t * 2.0).min(1.0)) as u8;
+            let g = (255.0 * (1.0 - t).min(1.0)) as u8;
+            let b = (255.0 * (1.0 - t * 3.0).max(0.0)) as u8;
+            Color::Rgb { r, g, b }
+        } else {
+            Color::Rgb {
+                r: 60,
+                g: 60,
+                b: 60,
+            }
+        };
+        let ch = if i < filled { "█" } else { "░" };
+        queue!(stdout, SetForegroundColor(color), Print(ch))?;
+    }
+    queue!(
+        stdout,
+        SetForegroundColor(Color::DarkGrey),
+        Print("]"),
+        ResetColor
+    )?;
+
+    // @ autocomplete dropdown.
+    if app.focus == Focus::Input {
+        let completions = at_completions(&app.tasks, &app.input);
+        if !completions.is_empty() {
+            const MAX_SHOW: usize = 8;
+            let show = completions.len().min(MAX_SHOW);
+            if show > 0 {
+                let sel = app
+                    .at_autocomplete_selected
+                    .min(completions.len().saturating_sub(1));
+                let scroll = if sel >= show { sel - show + 1 } else { 0 };
+                for (draw_i, (short_id, title, bucket)) in
+                    completions.iter().enumerate().skip(scroll).take(show)
+                {
+                    let row_from_bottom = show - (draw_i - scroll) - 1;
+                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
+                    let label = format!(" {} {} [{}]", short_id, title, bucket);
+                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
+                    queue!(stdout, MoveTo(x, y_row))?;
+                    if draw_i == sel {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::White),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    } else {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::White),
+                            SetBackgroundColor(Color::DarkGrey),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
+    // Cursor.
+    if app.focus == Focus::Input {
+        let cursor_x = x as usize + prompt.width() + cursor_vis_offset;
+        queue!(
+            stdout,
+            MoveTo((cursor_x as u16).min(cols.saturating_sub(1)), y_input),
+            Show
+        )?;
+    } else {
+        queue!(stdout, Hide)?;
+    }
+
+    Ok(())
+}
+
 fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
     let num_buckets = app.settings.buckets.len().max(1);
@@ -4089,12 +4258,6 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
     // Top padding below the tabs row.
     let y_body_top = 3u16;
     let y_status = rows.saturating_sub(5);
-    let y_sep_top = rows.saturating_sub(4);
-    let y_input = rows.saturating_sub(3);
-    let y_sep_bottom = rows.saturating_sub(2);
-    let y_help = rows.saturating_sub(1);
-
-    let x_input = x_margin as u16;
 
     let content_width = width.saturating_sub(x_margin * 2);
     let col_width = if num_buckets > 1 {
@@ -4164,164 +4327,6 @@ fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) 
             col_width,
             y_status,
         )?;
-    }
-
-    // Separator above input.
-    let sep = "─".repeat(content_width);
-    queue!(
-        stdout,
-        MoveTo(x_input, y_sep_top),
-        SetForegroundColor(Color::DarkGrey),
-        Print(&sep),
-        ResetColor
-    )?;
-
-    // Input
-    let prompt = "› ";
-    let max_input = width
-        .saturating_sub(x_margin * 2)
-        .saturating_sub(prompt.width());
-    let (shown, cursor_vis_offset) = if app.input.is_empty() {
-        (String::new(), 0)
-    } else {
-        input_visible_window(&app.input, app.input_cursor, max_input)
-    };
-
-    queue!(stdout, MoveTo(x_input, y_input))?;
-    match app.focus {
-        Focus::Input => queue!(stdout, ResetColor)?,
-        Focus::Tabs | Focus::Board | Focus::Edit => {
-            queue!(stdout, SetForegroundColor(Color::DarkGrey))?
-        }
-    };
-    queue!(stdout, Print(prompt))?;
-
-    if shown.is_empty() {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            Print(pad_to_width(
-                &clamp_text(
-                    "type a task • @<id> edit • /clear resets AI context",
-                    max_input
-                ),
-                max_input,
-            )),
-            ResetColor
-        )?;
-    } else {
-        queue!(stdout, Print(pad_to_width(&shown, max_input)), ResetColor)?;
-    }
-
-    // Separator below input.
-    queue!(
-        stdout,
-        MoveTo(x_input, y_sep_bottom),
-        SetForegroundColor(Color::DarkGrey),
-        Print(&sep),
-        ResetColor
-    )?;
-
-    // Help line with context usage bar on the right.
-    let help_text = "tab/i input • esc board • ↑/↓/←/→ nav • p advance • @id edit • /clear";
-    let context_tokens = estimate_context_tokens(&app.tasks, &app.chat_history);
-    let max_tokens: usize = 200_000;
-    let ratio = (context_tokens as f64 / max_tokens as f64).clamp(0.0, 1.0);
-
-    let bar_width: usize = 8;
-    let filled = ((ratio * bar_width as f64).round() as usize).min(bar_width);
-    let label = format!("~{}k", context_tokens / 1000);
-    let bar_total = bar_width + 2 + label.len(); // [] + label
-    let help_left_max = content_width.saturating_sub(bar_total + 2);
-    let help_left = clamp_text(help_text, help_left_max);
-    let padding = content_width.saturating_sub(help_left.width() + bar_total);
-
-    queue!(
-        stdout,
-        MoveTo(x_input, y_help),
-        SetForegroundColor(Color::DarkGrey),
-        Print(&help_left),
-        Print(" ".repeat(padding)),
-        Print(&label),
-        Print("["),
-    )?;
-    for i in 0..bar_width {
-        let t = i as f64 / bar_width as f64;
-        let color = if t < ratio {
-            let r = (255.0 * (t * 2.0).min(1.0)) as u8;
-            let g = (255.0 * (1.0 - t).min(1.0)) as u8;
-            let b = (255.0 * (1.0 - t * 3.0).max(0.0)) as u8;
-            Color::Rgb { r, g, b }
-        } else {
-            Color::Rgb {
-                r: 60,
-                g: 60,
-                b: 60,
-            }
-        };
-        let ch = if i < filled { "█" } else { "░" };
-        queue!(stdout, SetForegroundColor(color), Print(ch))?;
-    }
-    queue!(
-        stdout,
-        SetForegroundColor(Color::DarkGrey),
-        Print("]"),
-        ResetColor
-    )?;
-
-    // @ autocomplete dropdown.
-    if app.focus == Focus::Input {
-        let completions = at_completions(&app.tasks, &app.input);
-        if !completions.is_empty() {
-            const MAX_SHOW: usize = 8;
-            let max_dropdown = (y_sep_top as usize).saturating_sub(y_body_top as usize + 3);
-            let show = completions.len().min(MAX_SHOW).min(max_dropdown);
-            if show > 0 {
-                let sel = app
-                    .at_autocomplete_selected
-                    .min(completions.len().saturating_sub(1));
-                // Scroll window to keep selected visible.
-                let scroll = if sel >= show { sel - show + 1 } else { 0 };
-                for (draw_i, (short_id, title, bucket)) in
-                    completions.iter().enumerate().skip(scroll).take(show)
-                {
-                    let row_from_bottom = show - (draw_i - scroll) - 1;
-                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
-                    let label = format!(" {} {} [{}]", short_id, title, bucket);
-                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
-                    queue!(stdout, MoveTo(x_input, y_row))?;
-                    if draw_i == sel {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::Black),
-                            SetBackgroundColor(Color::White),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    } else {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::White),
-                            SetBackgroundColor(Color::DarkGrey),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-
-    // Cursor
-    if app.focus == Focus::Input {
-        let cursor_x = x_input as usize + prompt.width() + cursor_vis_offset;
-        queue!(
-            stdout,
-            MoveTo((cursor_x as u16).min(cols.saturating_sub(1)), y_input),
-            Show
-        )?;
-    } else {
-        queue!(stdout, Hide)?;
     }
 
     Ok(())
@@ -4614,7 +4619,6 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
     let (x_margin, _gap) = choose_layout(width, 1);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
-    let y_help = rows.saturating_sub(1);
 
     // Layout: [label_width] | [gantt_width]
     let label_width = 24usize.min(content_width / 3);
@@ -4986,14 +4990,6 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
         ResetColor
     )?;
 
-    queue!(
-        stdout,
-        MoveTo(x, y_help),
-        SetForegroundColor(Color::DarkGrey),
-        Print("↑/↓ select • e edit • 1 buckets • 3 kanban • 4 settings • q quit"),
-        ResetColor
-    )?;
-
     Ok(())
 }
 
@@ -5001,7 +4997,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
     let width = cols as usize;
     let (x_margin, gap) = choose_layout(width, 4);
     let x = x_margin as u16;
-    let y_help = rows.saturating_sub(1);
+    let y_help = rows.saturating_sub(5);
     let today = Utc::now().date_naive();
 
     queue!(
@@ -5116,13 +5112,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
             let task = app.tasks.iter().find(|t| t.id == *id).unwrap();
             let is_selected = is_active_col && app.kanban_selected == Some(*id);
 
-            // Priority bullet (shapes, not dots — dots are used for status).
-            let bullet = match task.priority {
-                Priority::Critical => "▲",
-                Priority::High => "◆",
-                Priority::Medium => "■",
-                Priority::Low => "·",
-            };
+            let bullet = priority_icon(task.priority);
 
             // Due date string.
             let due_str: Option<String> = task.due_date.map(|d| {
@@ -5228,35 +5218,25 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
     queue!(
         stdout,
         MoveTo(x, legend_y),
-        SetForegroundColor(Color::DarkGrey),
+        SetForegroundColor(priority_color(Priority::Critical)),
         Print("▲ critical  "),
-        SetForegroundColor(Color::Yellow),
+        SetForegroundColor(priority_color(Priority::High)),
         Print("◆ high  "),
-        ResetColor,
+        SetForegroundColor(priority_color(Priority::Medium)),
         Print("■ medium  "),
-        SetForegroundColor(Color::DarkGrey),
+        SetForegroundColor(priority_color(Priority::Low)),
         Print("· low"),
-        ResetColor
-    )?;
-
-    // ── Help bar ──
-    queue!(
-        stdout,
-        MoveTo(x, y_help),
-        SetForegroundColor(Color::DarkGrey),
-        Print("←/→ columns • ↑/↓ select • p advance • P back • e edit • 1-4/0 tabs • q quit"),
         ResetColor
     )?;
 
     Ok(())
 }
 
-fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) -> io::Result<()> {
     let width = cols as usize;
     let (x_margin, _) = choose_layout(width, 1);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
-    let y_help = rows.saturating_sub(1);
 
     queue!(
         stdout,
@@ -5407,20 +5387,6 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
         queue!(stdout, Hide)?;
     }
 
-    // Help.
-    let help = if app.settings_editing {
-        "enter save \u{2022} esc cancel"
-    } else {
-        "\u{2191}/\u{2193} navigate \u{2022} enter edit \u{2022} \u{2190}/\u{2192} toggle \u{2022} 1-4/0 tabs \u{2022} q quit"
-    };
-    queue!(
-        stdout,
-        MoveTo(x, y_help),
-        SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(help, content_width)),
-        ResetColor
-    )?;
-
     Ok(())
 }
 
@@ -5435,12 +5401,11 @@ fn mask_api_key(key: &str) -> String {
     format!("\u{2022}\u{2022}\u{2022}\u{2022}{}", visible)
 }
 
-fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) -> io::Result<()> {
     let width = cols as usize;
     let (x_margin, _) = choose_layout(width, 1);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
-    let y_help = rows.saturating_sub(1);
 
     queue!(
         stdout,
@@ -5492,13 +5457,7 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
             let y = 7 + (i * 4) as u16;
             let is_selected = i == app.suggestions_selected;
 
-            let priority_bullet = match suggestion.priority {
-                Priority::Critical => "\u{25c9}",
-                Priority::High => "\u{25cf}",
-                Priority::Medium => "\u{25cb}",
-                Priority::Low => "\u{00b7}",
-            };
-
+            let priority_bullet = priority_icon(suggestion.priority);
             let pcolor = priority_color(suggestion.priority);
 
             queue!(stdout, MoveTo(x, y))?;
@@ -5541,14 +5500,6 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) 
             )?;
         }
     }
-
-    queue!(
-        stdout,
-        MoveTo(x, y_help),
-        SetForegroundColor(Color::DarkGrey),
-        Print("e toggle email \u{2022} \u{2191}/\u{2193} navigate \u{2022} enter create task \u{2022} d/x dismiss \u{2022} q quit"),
-        ResetColor
-    )?;
 
     Ok(())
 }
@@ -6249,8 +6200,8 @@ fn progress_color(progress: Progress) -> Color {
 fn priority_color(priority: Priority) -> Color {
     match priority {
         Priority::Critical => Color::Red,
-        Priority::High => Color::Yellow,
-        Priority::Medium => Color::White,
+        Priority::High => Color::Magenta,
+        Priority::Medium => Color::Cyan,
         Priority::Low => Color::DarkGrey,
     }
 }
