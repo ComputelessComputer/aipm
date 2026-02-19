@@ -96,6 +96,7 @@ impl AiSettings {
             Progress::Todo => self.show_todo,
             Progress::InProgress => self.show_in_progress,
             Progress::Done => self.show_done,
+            Progress::Archived => false,
         }
     }
 
@@ -448,6 +449,7 @@ fn progress_to_str(p: Progress) -> &'static str {
         Progress::Todo => "Todo",
         Progress::InProgress => "InProgress",
         Progress::Done => "Done",
+        Progress::Archived => "Archived",
     }
 }
 
@@ -522,6 +524,7 @@ fn parse_task_file(content: &str) -> Result<Task, String> {
         "todo" => Progress::Todo,
         "inprogress" | "in progress" | "in-progress" => Progress::InProgress,
         "done" => Progress::Done,
+        "archived" => Progress::Archived,
         other => return Err(format!("unknown progress: {other}")),
     };
 

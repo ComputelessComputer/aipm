@@ -106,6 +106,7 @@ fn parse_progress(s: &str) -> Progress {
         "todo" => Progress::Todo,
         "in progress" | "inprogress" | "in_progress" => Progress::InProgress,
         "done" => Progress::Done,
+        "archived" => Progress::Archived,
         _ => die(&format!("Unknown progress: {s}")),
     }
 }

@@ -478,6 +478,10 @@ fn main() -> io::Result<()> {
         esc_last: Instant::now(),
     };
 
+    if auto_archive_tasks(&mut app.tasks) {
+        persist(&mut app);
+    }
+
     app.update_rx = Some(spawn_update_check());
     app.suggestions_rx = Some(spawn_email_poller(app.settings.clone()));
 
@@ -495,6 +499,8 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     let mut needs_redraw = true;
     let mut needs_clear = true; // full screen clear on first draw
 
+    let mut archive_check = Instant::now();
+
     loop {
         if poll_ai(app) {
             needs_redraw = true;
@@ -502,6 +508,14 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
 
         if poll_suggestions(app) {
             needs_redraw = true;
+        }
+
+        if archive_check.elapsed() >= Duration::from_secs(60) {
+            if auto_archive_tasks(&mut app.tasks) {
+                persist(app);
+                needs_redraw = true;
+            }
+            archive_check = Instant::now();
         }
 
         if let Some(rx) = &app.update_rx {
@@ -2171,6 +2185,7 @@ fn commit_edit_buf(app: &mut App) {
                 "todo" => Some(Progress::Todo),
                 "in progress" | "inprogress" | "in-progress" => Some(Progress::InProgress),
                 "done" => Some(Progress::Done),
+                "archived" => Some(Progress::Archived),
                 _ => None,
             } {
                 task.set_progress(p, now);
@@ -2579,6 +2594,7 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 Progress::Todo => Progress::Backlog,
                 Progress::InProgress => Progress::Todo,
                 Progress::Done => Progress::InProgress,
+                Progress::Archived => Progress::Done,
             };
             ensure_kanban_selection(app);
         }
@@ -2588,6 +2604,7 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 Progress::Todo => Progress::InProgress,
                 Progress::InProgress => Progress::Done,
                 Progress::Done => Progress::Backlog,
+                Progress::Archived => Progress::Backlog,
             };
             ensure_kanban_selection(app);
         }
@@ -3607,6 +3624,20 @@ fn sync_parent_progress(tasks: &mut [Task], child_id: Uuid, now: chrono::DateTim
     false
 }
 
+fn auto_archive_tasks(tasks: &mut [Task]) -> bool {
+    let cutoff = Utc::now() - chrono::Duration::days(3);
+    let now = Utc::now();
+    let mut changed = false;
+    for task in tasks.iter_mut() {
+        if task.progress == Progress::Done && task.updated_at < cutoff {
+            task.progress = Progress::Archived;
+            task.updated_at = now;
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn build_ai_context(tasks: &[Task]) -> Vec<llm::ContextTask> {
     let mut refs: Vec<&Task> = tasks.iter().collect();
     refs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -4377,7 +4408,10 @@ fn render_bucket_column(
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "—".to_string());
         // Sub-issue info.
-        let child_indices = children_of(&app.tasks, task.id);
+        let child_indices: Vec<usize> = children_of(&app.tasks, task.id)
+            .into_iter()
+            .filter(|&i| app.tasks[i].progress != Progress::Archived)
+            .collect();
         let has_children = !child_indices.is_empty();
         let sub_info = if has_children {
             let done_count = child_indices
@@ -4546,6 +4580,7 @@ fn render_bucket_column(
                     Progress::InProgress => "\u{25d0}",
                     Progress::Todo => "\u{25cb}",
                     Progress::Backlog => "\u{25cc}",
+                    Progress::Archived => "\u{25aa}",
                 };
                 let prefix_str = " \u{21b3} ";
                 let id_str = format!("{} ", short_id);
@@ -4808,6 +4843,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
             Progress::InProgress => Color::Yellow,
             Progress::Todo => Color::Blue,
             Progress::Backlog => Color::DarkGrey,
+            Progress::Archived => Color::DarkGrey,
         };
 
         // Draw the Gantt bar column by column
@@ -5023,7 +5059,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
     let list_height = list_bottom.saturating_sub(list_top) as usize;
     let max_visible = list_height / CARD_LINES as usize;
 
-    for (i, stage) in Progress::ALL.iter().enumerate() {
+    for (i, stage) in Progress::ALL.iter().take(4).enumerate() {
         let cx = col_x[i] as u16;
         let is_active_col = *stage == app.kanban_stage;
         let ids = kanban_task_ids(&app.tasks, *stage);
@@ -6033,6 +6069,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                     Progress::InProgress => "\u{25d0}",
                     Progress::Todo => "\u{25cb}",
                     Progress::Backlog => "\u{25cc}",
+                    Progress::Archived => "\u{25aa}",
                 };
                 let prefix = format!("{}  ", " ".repeat(label_w));
                 let title_text = format!(" {}", child.title);
@@ -6176,7 +6213,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 }
 
 fn progress_gauge(progress: Progress) -> String {
-    let stage = progress.stage_index();
+    let stage = progress.stage_index().min(3);
     let mut out = String::new();
     for i in 0..4 {
         if i <= stage {
@@ -6194,6 +6231,7 @@ fn progress_color(progress: Progress) -> Color {
         Progress::InProgress => Color::Yellow,
         Progress::Todo => Color::Blue,
         Progress::Backlog => Color::DarkGrey,
+        Progress::Archived => Color::DarkGrey,
     }
 }
 

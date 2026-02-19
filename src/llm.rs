@@ -1578,6 +1578,7 @@ fn parse_progress(input: &str) -> Option<Progress> {
         "todo" => Some(Progress::Todo),
         "in progress" | "inprogress" | "in-progress" => Some(Progress::InProgress),
         "done" => Some(Progress::Done),
+        "archived" => Some(Progress::Archived),
         _ => None,
     }
 }

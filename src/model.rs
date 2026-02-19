@@ -16,14 +16,16 @@ pub enum Progress {
     Todo,
     InProgress,
     Done,
+    Archived,
 }
 
 impl Progress {
-    pub const ALL: [Progress; 4] = [
+    pub const ALL: [Progress; 5] = [
         Progress::Backlog,
         Progress::Todo,
         Progress::InProgress,
         Progress::Done,
+        Progress::Archived,
     ];
 
     pub fn title(self) -> &'static str {
@@ -32,6 +34,7 @@ impl Progress {
             Progress::Todo => "Todo",
             Progress::InProgress => "In progress",
             Progress::Done => "Done",
+            Progress::Archived => "Archived",
         }
     }
 
@@ -41,6 +44,7 @@ impl Progress {
             Progress::Todo => 1,
             Progress::InProgress => 2,
             Progress::Done => 3,
+            Progress::Archived => 4,
         }
     }
 
@@ -49,7 +53,8 @@ impl Progress {
             Progress::Backlog => Progress::Todo,
             Progress::Todo => Progress::InProgress,
             Progress::InProgress => Progress::Done,
-            Progress::Done => Progress::Done,
+            Progress::Done => Progress::Archived,
+            Progress::Archived => Progress::Archived,
         }
     }
 
@@ -59,6 +64,7 @@ impl Progress {
             Progress::Todo => Progress::Backlog,
             Progress::InProgress => Progress::Todo,
             Progress::Done => Progress::InProgress,
+            Progress::Archived => Progress::Done,
         }
     }
 }
@@ -182,12 +188,15 @@ pub fn compute_parent_progress(children_progress: &[Progress]) -> Option<Progres
     if children_progress.is_empty() {
         return None;
     }
-    let all_done = children_progress.iter().all(|p| *p == Progress::Done);
+    let all_done = children_progress
+        .iter()
+        .all(|p| *p == Progress::Done || *p == Progress::Archived);
     if all_done {
         return Some(Progress::Done);
     }
     let any_in_progress = children_progress.contains(&Progress::InProgress);
-    let any_done = children_progress.contains(&Progress::Done);
+    let any_done = children_progress.contains(&Progress::Done)
+        || children_progress.contains(&Progress::Archived);
     if any_in_progress || any_done {
         return Some(Progress::InProgress);
     }
