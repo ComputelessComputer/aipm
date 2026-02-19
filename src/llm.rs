@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use chrono::NaiveDate;
+use chrono::{Local, NaiveDate};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -665,7 +665,10 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
         return edit_task(cfg, job, instruction);
     }
 
-    let system = "You are an expert AI project manager. Output ONLY valid JSON. No markdown.";
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let system = format!(
+        "Today is {today}. You are an expert AI project manager. Output ONLY valid JSON. No markdown."
+    );
 
     let mut context_lines = String::new();
     for task in job.context.iter().take(40) {
@@ -697,7 +700,7 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
         context_lines
     );
 
-    let content = match call_llm(cfg, system, &user) {
+    let content = match call_llm(cfg, &system, &user) {
         Ok(text) => text,
         Err(err) => {
             return AiResult {
@@ -883,7 +886,10 @@ fn short_id(id: Uuid) -> String {
 }
 
 fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
-    let system = "You are an expert AI project manager. Modify the given task based on the user instruction. Output ONLY valid JSON. No markdown.";
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let system = format!(
+        "Today is {today}. You are an expert AI project manager. Modify the given task based on the user instruction. Output ONLY valid JSON. No markdown."
+    );
 
     let snapshot = job.task_snapshot.as_deref().unwrap_or("");
 
@@ -911,7 +917,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         context_lines
     );
 
-    let content = match call_llm(cfg, system, &user) {
+    let content = match call_llm(cfg, &system, &user) {
         Ok(text) => text,
         Err(err) => {
             return AiResult {
@@ -1357,7 +1363,9 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
         fetch_url_contexts(&urls, cfg.timeout)
     };
 
-    let system = "You are an expert AI project manager. Analyze the user's message and call \
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let system = format!(
+        "Today is {today}. You are an expert AI project manager. Analyze the user's message and call \
         the appropriate tool.\n\
         Rules:\n\
         - CRITICAL: Before creating ANY task, carefully check ALL existing tasks AND their sub-tasks \
@@ -1374,7 +1382,8 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
         - For delete: just call delete_task with the target_id.\n\
         - When the user mentions a task (by name or reference) and follows with an instruction, \
         assume the instruction applies to that task or its subtasks — use update_task or \
-        decompose_task targeting that task rather than creating something new.";
+        decompose_task targeting that task rather than creating something new."
+    );
 
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
 
@@ -1402,7 +1411,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
 
     let tools = triage_tool_defs(cfg.provider, &job.bucket_names);
 
-    let (tool_name, args) = match call_llm_with_tools(cfg, system, &user_prompt, &tools) {
+    let (tool_name, args) = match call_llm_with_tools(cfg, &system, &user_prompt, &tools) {
         Ok(result) => result,
         Err(err) => return err_result(err),
     };
