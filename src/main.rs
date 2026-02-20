@@ -123,6 +123,7 @@ enum BucketEditField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsField {
     OwnerName,
+    UserProfile,
     AiEnabled,
     OpenAiKey,
     AnthropicKey,
@@ -136,8 +137,9 @@ enum SettingsField {
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 11] = [
+    const ALL: [SettingsField; 12] = [
         SettingsField::OwnerName,
+        SettingsField::UserProfile,
         SettingsField::AiEnabled,
         SettingsField::OpenAiKey,
         SettingsField::AnthropicKey,
@@ -153,6 +155,7 @@ impl SettingsField {
     fn label(self) -> &'static str {
         match self {
             SettingsField::OwnerName => "Owner Name",
+            SettingsField::UserProfile => "About You",
             SettingsField::AiEnabled => "AI Enabled",
             SettingsField::OpenAiKey => "OpenAI Key",
             SettingsField::AnthropicKey => "Anthropic Key",
@@ -234,6 +237,11 @@ struct App {
     settings_field: SettingsField,
     settings_buf: String,
     settings_editing: bool,
+    /// Memory section focus in settings tab.
+    settings_memory_focus: bool,
+    memory_selected: usize,
+    /// Fact pending user confirmation before being stored.
+    pending_memory: Option<String>,
 
     chat_history: Vec<llm::ChatEntry>,
     last_triage_input: String,
@@ -463,6 +471,9 @@ fn main() -> io::Result<()> {
         settings_field: SettingsField::AiEnabled,
         settings_buf: String::new(),
         settings_editing: false,
+        settings_memory_focus: false,
+        memory_selected: 0,
+        pending_memory: None,
         chat_history: Vec::new(),
         last_triage_input: String::new(),
         input_history: Vec::new(),
@@ -690,6 +701,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.status = None;
             return Ok(false);
         }
+    }
+
+    // Memory confirmation intercepts all keys.
+    if app.pending_memory.is_some() {
+        return handle_memory_confirm_key(app, key);
     }
 
     // Delete confirmation intercepts all keys.
@@ -1426,6 +1442,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                     triage_input: Some(triage_input),
                                     triage_context: Some(triage_ctx),
                                     chat_history: app.chat_history.clone(),
+                                    user_profile: app.settings.user_profile.clone(),
+                                    memory_facts: app.settings.memory_facts.clone(),
                                 });
                                 app.status =
                                     Some(("AI decomposing…".to_string(), Instant::now(), true));
@@ -1452,6 +1470,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                                         triage_input: None,
                                         triage_context: None,
                                         chat_history: Vec::new(),
+                                        user_profile: app.settings.user_profile.clone(),
+                                        memory_facts: app.settings.memory_facts.clone(),
                                     });
                                     app.status = Some((
                                         format!("AI editing: {}…", task.title),
@@ -1503,6 +1523,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     triage_input: Some(raw_input),
                     triage_context: Some(triage_ctx),
                     chat_history: app.chat_history.clone(),
+                    user_profile: app.settings.user_profile.clone(),
+                    memory_facts: app.settings.memory_facts.clone(),
                 });
                 app.status = Some(("AI thinking…".to_string(), Instant::now(), true));
             } else {
@@ -1650,6 +1672,24 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         _ => Ok(false),
     }
+}
+
+fn handle_memory_confirm_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => {
+            if let Some(fact) = app.pending_memory.take() {
+                app.settings.memory_facts.push(fact);
+                persist_settings(app);
+                app.status = Some(("Memory saved".to_string(), Instant::now(), false));
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.pending_memory = None;
+            app.status = Some(("Memory dismissed".to_string(), Instant::now(), false));
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
@@ -2749,28 +2789,65 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            let idx = SettingsField::ALL
-                .iter()
-                .position(|f| *f == app.settings_field)
-                .unwrap_or(0);
-            let next = if idx == 0 {
-                SettingsField::ALL.len() - 1
+            if app.settings_memory_focus {
+                if app.memory_selected == 0 || app.settings.memory_facts.is_empty() {
+                    app.settings_memory_focus = false;
+                } else {
+                    app.memory_selected -= 1;
+                }
             } else {
-                idx - 1
-            };
-            app.settings_field = SettingsField::ALL[next];
+                let idx = SettingsField::ALL
+                    .iter()
+                    .position(|f| *f == app.settings_field)
+                    .unwrap_or(0);
+                let next = if idx == 0 {
+                    SettingsField::ALL.len() - 1
+                } else {
+                    idx - 1
+                };
+                app.settings_field = SettingsField::ALL[next];
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            let idx = SettingsField::ALL
-                .iter()
-                .position(|f| *f == app.settings_field)
-                .unwrap_or(0);
-            let next = (idx + 1) % SettingsField::ALL.len();
-            app.settings_field = SettingsField::ALL[next];
+            if app.settings_memory_focus {
+                let max = app.settings.memory_facts.len().saturating_sub(1);
+                if app.memory_selected < max {
+                    app.memory_selected += 1;
+                }
+            } else {
+                let idx = SettingsField::ALL
+                    .iter()
+                    .position(|f| *f == app.settings_field)
+                    .unwrap_or(0);
+                if idx == SettingsField::ALL.len() - 1 && !app.settings.memory_facts.is_empty() {
+                    app.settings_memory_focus = true;
+                    app.memory_selected = 0;
+                } else {
+                    let next = (idx + 1) % SettingsField::ALL.len();
+                    app.settings_field = SettingsField::ALL[next];
+                }
+            }
+        }
+        KeyCode::Char('d') | KeyCode::Delete if app.settings_memory_focus => {
+            if !app.settings.memory_facts.is_empty()
+                && app.memory_selected < app.settings.memory_facts.len()
+            {
+                app.settings.memory_facts.remove(app.memory_selected);
+                let remaining = app.settings.memory_facts.len();
+                app.memory_selected = app.memory_selected.min(remaining.saturating_sub(1));
+                if remaining == 0 {
+                    app.settings_memory_focus = false;
+                }
+                persist_settings(app);
+            }
         }
         KeyCode::Enter | KeyCode::Char(' ') => match app.settings_field {
             SettingsField::OwnerName => {
                 app.settings_buf = app.settings.owner_name.clone();
+                app.settings_editing = true;
+            }
+            SettingsField::UserProfile => {
+                app.settings_buf = app.settings.user_profile.clone();
                 app.settings_editing = true;
             }
             SettingsField::AiEnabled => {
@@ -2872,6 +2949,9 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             match app.settings_field {
                 SettingsField::OwnerName => {
                     app.settings.owner_name = app.settings_buf.trim().to_string();
+                }
+                SettingsField::UserProfile => {
+                    app.settings.user_profile = app.settings_buf.trim().to_string();
                 }
                 SettingsField::OpenAiKey => {
                     app.settings.openai_api_key = app.settings_buf.clone();
@@ -3369,6 +3449,8 @@ fn poll_ai(app: &mut App) -> bool {
                                     triage_input: None,
                                     triage_context: None,
                                     chat_history: Vec::new(),
+                                    user_profile: app.settings.user_profile.clone(),
+                                    memory_facts: app.settings.memory_facts.clone(),
                                 });
                             }
                         }
@@ -3382,6 +3464,9 @@ fn poll_ai(app: &mut App) -> bool {
                             true,
                         ));
                     }
+                }
+                llm::TriageAction::RememberFact(fact) => {
+                    app.pending_memory = Some(fact.clone());
                 }
             }
             // Update chat history after triage.
@@ -4042,6 +4127,10 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
 
     if app.confirm_delete_id.is_some() {
         render_delete_confirm(stdout, app, cols, rows)?;
+    }
+
+    if app.pending_memory.is_some() {
+        render_memory_confirm(stdout, app, cols, rows)?;
     }
 
     if app.status.is_some() {
@@ -5306,6 +5395,13 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) ->
                     app.settings.owner_name.clone()
                 }
             }
+            SettingsField::UserProfile => {
+                if app.settings.user_profile.trim().is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    app.settings.user_profile.clone()
+                }
+            }
             SettingsField::AiEnabled => {
                 if app.settings.enabled {
                     "On".to_string()
@@ -5385,8 +5481,67 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) ->
         )?;
     }
 
+    // Memories section.
+    let mem_start_y = 5 + SettingsField::ALL.len() as u16 + 1;
+    let mem_count = app.settings.memory_facts.len();
+    let header = format!(
+        " ── Memories ({}) {}",
+        mem_count,
+        "─".repeat(content_width.saturating_sub(18))
+    );
+    queue!(
+        stdout,
+        MoveTo(x, mem_start_y),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(&header, content_width)),
+        ResetColor
+    )?;
+    if mem_count == 0 {
+        queue!(
+            stdout,
+            MoveTo(x, mem_start_y + 1),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" (no memories yet)"),
+            ResetColor
+        )?;
+    } else {
+        for (i, fact) in app.settings.memory_facts.iter().enumerate() {
+            let is_selected = app.settings_memory_focus && i == app.memory_selected;
+            let prefix = if is_selected { " ▸ " } else { "   " };
+            let line = format!("{}{}", prefix, fact);
+            queue!(stdout, MoveTo(x, mem_start_y + 1 + i as u16))?;
+            if is_selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White)
+                )?;
+            } else {
+                queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+            }
+            queue!(
+                stdout,
+                Print(pad_to_width(
+                    &clamp_text(&line, content_width),
+                    content_width
+                )),
+                ResetColor
+            )?;
+        }
+    }
+    let mem_hint_y = mem_start_y + 1 + mem_count.max(1) as u16;
+    if app.settings_memory_focus {
+        queue!(
+            stdout,
+            MoveTo(x, mem_hint_y),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" d delete  ↑ back"),
+            ResetColor
+        )?;
+    }
+
     // AI status.
-    let status_y = 5 + SettingsField::ALL.len() as u16 + 1;
+    let status_y = mem_hint_y + 2;
     let ai_status = if app.ai.is_some() {
         "AI active \u{2713}"
     } else if !app.settings.enabled {
@@ -5662,6 +5817,59 @@ fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Res
         )?;
     }
 
+    Ok(())
+}
+
+fn render_memory_confirm(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let Some(fact) = &app.pending_memory else {
+        return Ok(());
+    };
+
+    let box_width = (cols as usize).clamp(40, 64);
+    let box_height = 6u16;
+    let x0 = (cols.saturating_sub(box_width as u16)) / 2;
+    let y0 = (rows.saturating_sub(box_height)) / 2;
+
+    for dy in 0..box_height {
+        queue!(
+            stdout,
+            MoveTo(x0, y0 + dy),
+            Print(pad_to_width("", box_width))
+        )?;
+    }
+
+    let border_fill: String = "─".repeat(box_width.saturating_sub(16));
+    queue!(
+        stdout,
+        MoveTo(x0, y0),
+        SetForegroundColor(Color::Yellow),
+        Print(clamp_text(
+            &format!("┌─ Remember this? ─{} ", border_fill),
+            box_width,
+        )),
+        ResetColor
+    )?;
+
+    let inner_x = x0 + 2;
+    let inner_w = box_width.saturating_sub(4);
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + 2),
+        SetForegroundColor(Color::White),
+        Print(clamp_text(&format!("\"{}\"", fact), inner_w)),
+        ResetColor
+    )?;
+
+    let help = "y save  \u{2022}  n dismiss";
+    queue!(
+        stdout,
+        MoveTo(inner_x, y0 + box_height - 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, inner_w)),
+        ResetColor
+    )?;
+
+    queue!(stdout, Hide)?;
     Ok(())
 }
 
@@ -6498,7 +6706,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
         Some(s) => s.load_tasks().unwrap_or_default(),
         None => Vec::new(),
     };
-    let settings = match &storage {
+    let mut settings = match &storage {
         Some(s) => s.load_settings().unwrap_or_default(),
         None => AiSettings::default(),
     };
@@ -6532,6 +6740,8 @@ fn run_cli(instruction: &str) -> io::Result<()> {
         triage_input: Some(instruction.to_string()),
         triage_context: Some(triage_ctx),
         chat_history: Vec::new(),
+        user_profile: settings.user_profile.clone(),
+        memory_facts: settings.memory_facts.clone(),
     });
 
     let mut pending = 1u32;
@@ -6849,6 +7059,8 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                                     triage_input: None,
                                     triage_context: None,
                                     chat_history: Vec::new(),
+                                    user_profile: settings.user_profile.clone(),
+                                    memory_facts: settings.memory_facts.clone(),
                                 });
                             }
                         }
@@ -6859,6 +7071,15 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         );
                         pending += task_ids.len() as u32;
                     }
+                }
+                llm::TriageAction::RememberFact(fact) => {
+                    // In CLI mode, auto-save without confirmation prompt.
+                    settings.memory_facts.push(fact.clone());
+                    if let Some(storage) = &storage {
+                        let _ = storage.save_settings(&settings);
+                    }
+                    println!("  - Remembered: \"{fact}\"");
+                    total_changes += 1;
                 }
             }
         } else {

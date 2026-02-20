@@ -47,6 +47,10 @@ pub struct AiJob {
     pub triage_context: Option<String>,
     /// Recent conversation history for triage context.
     pub chat_history: Vec<ChatEntry>,
+    /// Free-text bio the user wrote about themselves.
+    pub user_profile: String,
+    /// Auto-remembered facts about the user.
+    pub memory_facts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,6 +83,8 @@ pub enum TriageAction {
         target_id: Option<String>,
         specs: Vec<SubTaskSpec>,
     },
+    /// AI wants to remember a fact about the user (pending confirmation).
+    RememberFact(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1127,6 +1133,11 @@ struct BulkUpdateTasksArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct RememberFactArgs {
+    fact: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SubTaskEnriched {
     title: Option<String>,
     description: Option<String>,
@@ -1290,6 +1301,21 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
                 "required": ["target_ids", "instruction"]
             })
         ),
+        make_tool_def(
+            provider,
+            "remember_fact",
+            "Save a durable fact about the user for future context. Use sparingly — only for broadly useful information like their name, role, team, or strong preferences. Never use for task-specific details.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "fact": {
+                        "type": "string",
+                        "description": "A concise, self-contained fact about the user (max 120 chars)"
+                    }
+                },
+                "required": ["fact"]
+            })
+        ),
     ])
 }
 
@@ -1364,7 +1390,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
     };
 
     let today = Local::now().format("%Y-%m-%d").to_string();
-    let system = format!(
+    let mut system = format!(
         "Today is {today}. You are an expert AI project manager. Analyze the user's message and call \
         the appropriate tool.\n\
         Rules:\n\
@@ -1382,8 +1408,19 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
         - For delete: just call delete_task with the target_id.\n\
         - When the user mentions a task (by name or reference) and follows with an instruction, \
         assume the instruction applies to that task or its subtasks — use update_task or \
-        decompose_task targeting that task rather than creating something new."
+        decompose_task targeting that task rather than creating something new.\n\
+        - If the user shares something durable and broadly useful about themselves (name, role, team, \
+        strong preference), call remember_fact. Do NOT remember task-specific details."
     );
+    if !job.user_profile.is_empty() {
+        system.push_str(&format!("\n\nUser profile: {}", job.user_profile));
+    }
+    if !job.memory_facts.is_empty() {
+        system.push_str("\n\nKnown facts about the user:");
+        for fact in &job.memory_facts {
+            system.push_str(&format!("\n- {fact}"));
+        }
+    }
 
     let triage_ctx = job.triage_context.as_deref().unwrap_or("");
 
@@ -1574,6 +1611,23 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                     targets,
                     instruction: parsed.instruction,
                 }),
+                sub_task_specs: Vec::new(),
+            }
+        }
+        "remember_fact" => {
+            let parsed: RememberFactArgs = match serde_json::from_value(args) {
+                Ok(v) => v,
+                Err(e) => return err_result(format!("Failed to parse remember_fact args: {e}")),
+            };
+            let fact = parsed.fact.trim().to_string();
+            if fact.is_empty() {
+                return err_result("remember_fact: empty fact".to_string());
+            }
+            AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate::default(),
+                error: None,
+                triage_action: Some(TriageAction::RememberFact(fact)),
                 sub_task_specs: Vec::new(),
             }
         }

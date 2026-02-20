@@ -41,6 +41,10 @@ pub struct AiSettings {
     pub buckets: Vec<BucketDef>,
     #[serde(default)]
     pub email_suggestions_enabled: bool,
+    #[serde(default)]
+    pub user_profile: String,
+    #[serde(default)]
+    pub memory_facts: Vec<String>,
 }
 
 fn default_owner_name() -> String {
@@ -85,6 +89,8 @@ impl Default for AiSettings {
             show_done: false,
             buckets: default_buckets(),
             email_suggestions_enabled: false,
+            user_profile: String::new(),
+            memory_facts: Vec::new(),
         }
     }
 }
