@@ -569,14 +569,16 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
             let prev_confirm = app.confirm_delete_id;
             let prev_bucket_edit = app.bucket_edit_active;
             let prev_header_sel = app.bucket_header_selected;
-            let prev_at_ac = input_has_at_prefix(&app.input) && app.focus == Focus::Input;
+            let prev_at_ac =
+                input_has_at_prefix(&app.input, app.input_cursor) && app.focus == Focus::Input;
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(app, key)? {
                         break;
                     }
                     needs_redraw = true;
-                    let cur_at_ac = input_has_at_prefix(&app.input) && app.focus == Focus::Input;
+                    let cur_at_ac = input_has_at_prefix(&app.input, app.input_cursor)
+                        && app.focus == Focus::Input;
                     // Full clear when layout changes significantly.
                     if app.tab != prev_tab
                         || app.focus != prev_focus
@@ -980,18 +982,81 @@ fn input_visible_window(input: &str, cursor_char: usize, max_width: usize) -> (S
     (out, cursor_offset)
 }
 
-/// Compute @ autocomplete completions from the current input.
-/// Active when input starts with `@` and the token after `@` has no space yet.
-fn at_completions(tasks: &[Task], input: &str) -> Vec<(String, String, String)> {
-    let trimmed = input.trim_start();
-    if !trimmed.starts_with('@') {
-        return Vec::new();
+/// Returns the query string being typed after `@` at the current cursor position,
+/// or `None` if the cursor is not inside an `@token`.
+fn active_at_query(input: &str, cursor: usize) -> Option<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let end = cursor.min(chars.len());
+    // Walk back from cursor to find the start of the current word.
+    let mut start = end;
+    while start > 0 && chars[start - 1] != ' ' {
+        start -= 1;
     }
-    let after_at = &trimmed[1..];
-    if after_at.contains(' ') {
-        return Vec::new();
+    if start < end && chars[start] == '@' {
+        Some(chars[start + 1..end].iter().collect())
+    } else {
+        None
     }
-    let query = after_at.to_ascii_lowercase();
+}
+
+/// Replace the `@token` at the cursor with `replacement`, returning the new input + cursor.
+fn replace_at_token(input: &str, cursor: usize, replacement: &str) -> (String, usize) {
+    let chars: Vec<char> = input.chars().collect();
+    let end = cursor.min(chars.len());
+    let mut start = end;
+    while start > 0 && chars[start - 1] != ' ' {
+        start -= 1;
+    }
+    let prefix: String = chars[..start].iter().collect();
+    let suffix: String = chars[end..].iter().collect();
+    let new_input = format!("{}{}{}", prefix, replacement, suffix);
+    let new_cursor = start + replacement.chars().count();
+    (new_input, new_cursor)
+}
+
+/// Expand every resolved `@<hex-id>` token in `input` to `"<title>" (@<id>)` so the AI
+/// understands which tasks are being referenced when mentions appear mid-sentence.
+fn expand_at_mentions(tasks: &[Task], input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let token_start = i + 1;
+            let mut token_end = token_start;
+            while token_end < chars.len() && chars[token_end] != ' ' {
+                token_end += 1;
+            }
+            let token: String = chars[token_start..token_end].iter().collect();
+            let lower = token.to_ascii_lowercase();
+            if (4..=8).contains(&lower.len()) && lower.chars().all(|c| c.is_ascii_hexdigit()) {
+                if let Some(task) = tasks.iter().find(|t| {
+                    let short =
+                        t.id.to_string()
+                            .chars()
+                            .take(lower.len())
+                            .collect::<String>();
+                    short.to_ascii_lowercase() == lower
+                }) {
+                    let short = task.id.to_string().chars().take(8).collect::<String>();
+                    out.push_str(&format!("\"{}\" (@{})", task.title, short));
+                    i = token_end;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Compute @ autocomplete completions based on the `@token` at the cursor position.
+fn at_completions(tasks: &[Task], input: &str, cursor: usize) -> Vec<(String, String, String)> {
+    let query = match active_at_query(input, cursor) {
+        Some(q) => q.to_ascii_lowercase(),
+        None => return Vec::new(),
+    };
     let mut matches: Vec<(String, String, String)> = tasks
         .iter()
         .filter(|t| {
@@ -1016,15 +1081,14 @@ fn at_completions(tasks: &[Task], input: &str) -> Vec<(String, String, String)> 
     matches
 }
 
-/// Check whether the input is in the @ prefix state (autocomplete eligible).
-fn input_has_at_prefix(input: &str) -> bool {
-    let t = input.trim_start();
-    t.starts_with('@') && !t[1..].contains(' ')
+/// Check whether the cursor is inside an `@token` (autocomplete eligible).
+fn input_has_at_prefix(input: &str, cursor: usize) -> bool {
+    active_at_query(input, cursor).is_some()
 }
 
 fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     // @ autocomplete interception.
-    let completions = at_completions(&app.tasks, &app.input);
+    let completions = at_completions(&app.tasks, &app.input, app.input_cursor);
     if !completions.is_empty() {
         match key.code {
             KeyCode::Up => {
@@ -1046,8 +1110,11 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     .at_autocomplete_selected
                     .min(completions.len().saturating_sub(1));
                 let (short_id, _, _) = &completions[sel];
-                app.input = format!("@{} ", short_id);
-                app.input_cursor = app.input.chars().count();
+                let replacement = format!("@{} ", short_id);
+                let (new_input, new_cursor) =
+                    replace_at_token(&app.input, app.input_cursor, &replacement);
+                app.input = new_input;
+                app.input_cursor = new_cursor;
                 app.at_autocomplete_selected = 0;
                 return Ok(false);
             }
@@ -1509,7 +1576,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             if let Some(ai) = &app.ai {
                 let context = build_ai_context(&app.tasks);
                 let triage_ctx = build_triage_context(&app.tasks);
-                app.last_triage_input = raw_input.clone();
+                // Expand any inline @<id> mentions so the AI knows exactly which tasks are referenced.
+                let triage_input = expand_at_mentions(&app.tasks, &raw_input);
+                app.last_triage_input = triage_input.clone();
                 ai.enqueue(llm::AiJob {
                     task_id: Uuid::nil(),
                     title: String::new(),
@@ -1521,7 +1590,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     lock_due_date: false,
                     edit_instruction: None,
                     task_snapshot: None,
-                    triage_input: Some(raw_input),
+                    triage_input: Some(triage_input),
                     triage_context: Some(triage_ctx),
                     chat_history: app.chat_history.clone(),
                     user_profile: app.settings.user_profile.clone(),
@@ -4326,7 +4395,7 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
 
     // @ autocomplete dropdown.
     if app.focus == Focus::Input {
-        let completions = at_completions(&app.tasks, &app.input);
+        let completions = at_completions(&app.tasks, &app.input, app.input_cursor);
         if !completions.is_empty() {
             const MAX_SHOW: usize = 8;
             let show = completions.len().min(MAX_SHOW);
