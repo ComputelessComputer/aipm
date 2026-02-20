@@ -3223,8 +3223,17 @@ fn poll_ai(app: &mut App) -> bool {
                         short.eq_ignore_ascii_case(prefix)
                     });
                     if let Some(pos) = target {
+                        let id = app.tasks[pos].id;
                         let title = app.tasks[pos].title.clone();
-                        app.tasks.remove(pos);
+                        let child_ids: Vec<Uuid> = children_of(&app.tasks, id)
+                            .iter()
+                            .map(|&i| app.tasks[i].id)
+                            .collect();
+                        let all_deleted: Vec<Uuid> = std::iter::once(id).chain(child_ids).collect();
+                        app.tasks.retain(|t| !all_deleted.contains(&t.id));
+                        for task in &mut app.tasks {
+                            task.dependencies.retain(|dep| !all_deleted.contains(dep));
+                        }
                         app.status =
                             Some((format!("AI deleted: {}", title), Instant::now(), false));
                         changed = true;
