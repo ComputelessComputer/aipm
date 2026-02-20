@@ -733,6 +733,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_tabs_key(app, key);
     }
 
+    // Input field intercepts all keys (numbers must not navigate tabs while typing).
+    if app.focus == Focus::Input {
+        return handle_input_key(app, key);
+    }
+
     // Tab switching with 1/2/3/4/0 (no modifiers).
     match key.code {
         KeyCode::Char('1') => {
@@ -767,10 +772,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         _ => {}
-    }
-
-    if app.focus == Focus::Input {
-        return handle_input_key(app, key);
     }
 
     match app.tab {
