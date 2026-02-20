@@ -2,6 +2,11 @@
 alwaysApply: true
 ---
 
+## Definition
+
+- This project is called AIPM - short for AI project manager. It is a TUI application that helps users intelligently manage their tasks.
+- When the user says "AI", "agent", or "AIPM AI agent", he is referring to the AI agent being used within AIPM.
+
 ## Commit Discipline
 
 - **Commit after every discrete action.** Each meaningful change (e.g. adding a feature, fixing a bug, refactoring, updating docs, adding a test) must be committed individually before moving on.
