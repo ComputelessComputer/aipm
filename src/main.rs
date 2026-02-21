@@ -1492,6 +1492,48 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 }
             }
 
+            // /organize: AI restructures all tasks into optimal format.
+            if app.input.trim() == "/organize" {
+                app.input.clear();
+                app.input_cursor = 0;
+                if let Some(ai) = &app.ai {
+                    let context = build_ai_context(&app.tasks);
+                    let triage_ctx = build_triage_context(&app.tasks);
+                    let organize_prompt = format!(
+                        "Review ALL tasks and subtasks listed below. Restructure them into the best possible format:\n\
+                        - Merge or consolidate obvious duplicates\n\
+                        - Fix parent/child relationships (move subtasks under the right parents)\n\
+                        - Clean up task titles for clarity and consistency\n\
+                        - Assign tasks to the most appropriate buckets\n\
+                        - Adjust priorities and progress where clearly miscategorised\n\
+                        Issue the minimum number of tool calls needed to achieve this. Do not create new tasks unless merging requires it. Do not delete tasks unless they are exact duplicates.\n\n\
+                        Current tasks:\n{triage_ctx}"
+                    );
+                    app.last_triage_input = organize_prompt.clone();
+                    ai.enqueue(llm::AiJob {
+                        task_id: Uuid::nil(),
+                        title: String::new(),
+                        suggested_bucket: default_bucket_name(&app.settings),
+                        context,
+                        bucket_names: bucket_names(&app.settings),
+                        lock_bucket: false,
+                        lock_priority: false,
+                        lock_due_date: false,
+                        edit_instruction: None,
+                        task_snapshot: None,
+                        triage_input: Some(organize_prompt),
+                        triage_context: None,
+                        chat_history: app.chat_history.clone(),
+                        user_profile: app.settings.user_profile.clone(),
+                        memory_facts: app.settings.memory_facts.clone(),
+                    });
+                    app.status = Some(("AI organising tasks…".to_string(), Instant::now(), true));
+                } else {
+                    app.status = Some(("AI not configured".to_string(), Instant::now(), false));
+                }
+                return Ok(false);
+            }
+
             // Add mode: create task directly, no AI.
             if app.input_mode == InputMode::Add {
                 let title = app.input.trim().to_string();
