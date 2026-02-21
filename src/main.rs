@@ -2471,6 +2471,19 @@ fn cycle_edit_field_value(app: &mut App, forward: bool) {
     load_edit_buf(app);
 }
 
+fn shift_due_date(app: &mut App, days: i64) {
+    let Some(id) = app.edit_task_id else { return };
+    let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) else {
+        return;
+    };
+    let now = Utc::now();
+    let base = task.due_date.unwrap_or_else(|| now.date_naive());
+    task.due_date = Some(base + chrono::Duration::days(days));
+    task.updated_at = now;
+    persist(app);
+    load_edit_buf(app);
+}
+
 fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     if app.editing_text {
         match key.code {
@@ -2704,11 +2717,17 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             EditField::Bucket | EditField::Progress | EditField::Priority => {
                 cycle_edit_field_value(app, false);
             }
+            EditField::DueDate => {
+                shift_due_date(app, -1);
+            }
             _ => {}
         },
         KeyCode::Right | KeyCode::Char('l') => match app.edit_field {
             EditField::Bucket | EditField::Progress | EditField::Priority => {
                 cycle_edit_field_value(app, true);
+            }
+            EditField::DueDate => {
+                shift_due_date(app, 1);
             }
             _ => {}
         },
