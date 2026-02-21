@@ -31,6 +31,7 @@ use crate::storage::{AiSettings, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Checklist,
     Default,
     Timeline,
     Kanban,
@@ -52,17 +53,19 @@ const MODEL_OPTIONS: &[&str] = &[
 impl Tab {
     fn next(self) -> Tab {
         match self {
+            Tab::Checklist => Tab::Default,
             Tab::Default => Tab::Timeline,
             Tab::Timeline => Tab::Kanban,
             Tab::Kanban => Tab::Suggestions,
             Tab::Suggestions => Tab::Settings,
-            Tab::Settings => Tab::Default,
+            Tab::Settings => Tab::Checklist,
         }
     }
 
     fn prev(self) -> Tab {
         match self {
-            Tab::Default => Tab::Settings,
+            Tab::Checklist => Tab::Settings,
+            Tab::Default => Tab::Checklist,
             Tab::Timeline => Tab::Default,
             Tab::Kanban => Tab::Timeline,
             Tab::Suggestions => Tab::Kanban,
@@ -77,6 +80,12 @@ enum Focus {
     Board,
     Input,
     Edit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Chat,
+    Add,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,11 +246,13 @@ struct App {
     settings_field: SettingsField,
     settings_buf: String,
     settings_editing: bool,
-    /// Memory section focus in settings tab.
     settings_memory_focus: bool,
     memory_selected: usize,
     /// Fact pending user confirmation before being stored.
     pending_memory: Option<String>,
+
+    input_mode: InputMode,
+    checklist_selected: usize,
 
     chat_history: Vec<llm::ChatEntry>,
     last_triage_input: String,
@@ -440,8 +451,8 @@ fn main() -> io::Result<()> {
         storage,
         tasks,
         ai: llm::AiRuntime::from_settings(&settings),
-        tab: Tab::Default,
-        focus: Focus::Input,
+        tab: Tab::Checklist,
+        focus: Focus::Board,
         selected_bucket: 0,
         selected_task_id: None,
         bucket_scrolls: vec![0; bucket_count],
@@ -474,6 +485,8 @@ fn main() -> io::Result<()> {
         settings_memory_focus: false,
         memory_selected: 0,
         pending_memory: None,
+        input_mode: InputMode::Chat,
+        checklist_selected: 0,
         chat_history: Vec::new(),
         last_triage_input: String::new(),
         input_history: Vec::new(),
@@ -740,27 +753,33 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_input_key(app, key);
     }
 
-    // Tab switching with 1/2/3/4/0 (no modifiers).
+    // Tab switching with 1/2/3/4/5/0 (no modifiers).
     match key.code {
         KeyCode::Char('1') => {
+            app.tab = Tab::Checklist;
+            app.focus = Focus::Board;
+            app.status = None;
+            return Ok(false);
+        }
+        KeyCode::Char('2') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('2') => {
+        KeyCode::Char('3') => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('4') => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('5') => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -777,6 +796,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     }
 
     match app.tab {
+        Tab::Checklist => handle_checklist_key(app, key),
         Tab::Default => handle_default_tab_key(app, key),
         Tab::Timeline => handle_timeline_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
@@ -798,21 +818,26 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.status = None;
         }
         KeyCode::Char('1') => {
+            app.tab = Tab::Checklist;
+            app.focus = Focus::Board;
+            app.status = None;
+        }
+        KeyCode::Char('2') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
         }
-        KeyCode::Char('2') => {
+        KeyCode::Char('3') => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('4') => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('5') => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -1132,7 +1157,10 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             Ok(false)
         }
         KeyCode::Tab => {
-            app.focus = Focus::Board;
+            app.input_mode = match app.input_mode {
+                InputMode::Chat => InputMode::Add,
+                InputMode::Add => InputMode::Chat,
+            };
             Ok(false)
         }
         KeyCode::Left => {
@@ -1462,6 +1490,22 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 if let Ok(fresh) = storage.reload_tasks() {
                     app.tasks = fresh;
                 }
+            }
+
+            // Add mode: create task directly, no AI.
+            if app.input_mode == InputMode::Add {
+                let title = app.input.trim().to_string();
+                if !title.is_empty() {
+                    let now = Utc::now();
+                    let bucket = default_bucket_name(&app.settings);
+                    let task = Task::new(bucket, title.clone(), now);
+                    app.tasks.push(task);
+                    app.status = Some((format!("Added: {title}"), Instant::now(), false));
+                    persist(app);
+                }
+                app.input.clear();
+                app.input_cursor = 0;
+                return Ok(false);
             }
 
             // @ prefix: edit a specific task (by id) or the selected task via AI.
@@ -4178,6 +4222,7 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
     render_tabs(stdout, app, cols)?;
 
     match app.tab {
+        Tab::Checklist => render_checklist_tab(stdout, app, cols, rows)?,
         Tab::Default => render_default_tab(stdout, app, cols, rows)?,
         Tab::Timeline => render_timeline_tab(stdout, app, cols, rows)?,
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
@@ -4256,10 +4301,11 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     let tabs_focused = app.focus == Focus::Tabs;
 
     let left_tabs: &[(Tab, &str)] = &[
-        (Tab::Default, "1 Buckets"),
-        (Tab::Timeline, "2 Timeline"),
-        (Tab::Kanban, "3 Kanban"),
-        (Tab::Suggestions, "4 Suggestions"),
+        (Tab::Checklist, "1 Checklist"),
+        (Tab::Default, "2 Buckets"),
+        (Tab::Timeline, "3 Timeline"),
+        (Tab::Kanban, "4 Kanban"),
+        (Tab::Suggestions, "5 Suggestions"),
     ];
 
     for (tab, label) in left_tabs {
@@ -4304,7 +4350,10 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
         ResetColor
     )?;
 
-    let prompt = "› ";
+    let prompt = match app.input_mode {
+        InputMode::Chat => "› ",
+        InputMode::Add => "+ ",
+    };
     let max_input = content_width.saturating_sub(prompt.width());
     let (shown, cursor_vis_offset) = if app.input.is_empty() {
         (String::new(), 0)
@@ -4322,16 +4371,14 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
     queue!(stdout, Print(prompt))?;
 
     if shown.is_empty() {
+        let placeholder = match app.input_mode {
+            InputMode::Add => "task title…  (tab: switch to chat)",
+            InputMode::Chat => "chat with AI…  (tab: switch to add)",
+        };
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
-            Print(pad_to_width(
-                &clamp_text(
-                    "type a task • @<id> edit • /clear resets AI context",
-                    max_input,
-                ),
-                max_input,
-            )),
+            Print(pad_to_width(&clamp_text(placeholder, max_input), max_input)),
             ResetColor
         )?;
     } else {
@@ -4447,6 +4494,194 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
     }
 
     Ok(())
+}
+
+/// Returns task indices ordered for the checklist: incomplete first (by updated_at desc),
+/// done tasks last (by updated_at desc). Archived tasks are hidden.
+fn checklist_task_order(tasks: &[Task]) -> Vec<usize> {
+    let mut incomplete: Vec<usize> = tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            t.progress != Progress::Done
+                && t.progress != Progress::Archived
+                && t.parent_id.is_none()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    incomplete.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+
+    let mut done: Vec<usize> = tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.progress == Progress::Done && t.parent_id.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    done.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+
+    incomplete.into_iter().chain(done).collect()
+}
+
+fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
+    let x = x_margin as u16;
+    let content_width = width.saturating_sub(x_margin * 2);
+
+    queue!(
+        stdout,
+        MoveTo(x, 3),
+        SetAttribute(Attribute::Bold),
+        Print(" Checklist"),
+        SetAttribute(Attribute::Reset)
+    )?;
+
+    let ordered = checklist_task_order(&app.tasks);
+    let list_start_y = 5u16;
+    let list_height = rows.saturating_sub(list_start_y + 4) as usize;
+    let sel = app.checklist_selected.min(ordered.len().saturating_sub(1));
+    let scroll = if sel >= list_height {
+        sel - list_height + 1
+    } else {
+        0
+    };
+
+    if ordered.is_empty() {
+        queue!(
+            stdout,
+            MoveTo(x, list_start_y),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" No tasks yet. Switch to add mode (tab) and type a task title."),
+            ResetColor
+        )?;
+    }
+
+    for (draw_i, &task_idx) in ordered.iter().enumerate().skip(scroll).take(list_height) {
+        let task = &app.tasks[task_idx];
+        let is_sel = draw_i == sel;
+        let y = list_start_y + (draw_i - scroll) as u16;
+
+        let done = task.progress == Progress::Done;
+        let checkbox = if done { "[x]" } else { "[ ]" };
+        let bucket_tag = format!("[{}]", task.bucket);
+        let title_max = content_width.saturating_sub(checkbox.len() + 2 + bucket_tag.len() + 1);
+        let title = clamp_text(&task.title, title_max);
+        let padding =
+            content_width.saturating_sub(checkbox.len() + 1 + title.width() + 1 + bucket_tag.len());
+        let line = format!(
+            " {} {}{}{}",
+            checkbox,
+            title,
+            " ".repeat(padding),
+            bucket_tag
+        );
+
+        queue!(stdout, MoveTo(x, y))?;
+        if is_sel && app.focus == Focus::Board {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White)
+            )?;
+        } else if done {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        }
+        queue!(
+            stdout,
+            Print(pad_to_width(
+                &clamp_text(&line, content_width),
+                content_width
+            )),
+            ResetColor
+        )?;
+    }
+
+    // subtask count hint for selected task
+    if let Some(&task_idx) = ordered.get(sel) {
+        let task = &app.tasks[task_idx];
+        let children: Vec<_> = app
+            .tasks
+            .iter()
+            .filter(|t| t.parent_id == Some(task.id))
+            .collect();
+        if !children.is_empty() {
+            let done_count = children
+                .iter()
+                .filter(|t| t.progress == Progress::Done)
+                .count();
+            let hint = format!(
+                " {} subtasks ({}/{} done)",
+                children.len(),
+                done_count,
+                children.len()
+            );
+            queue!(
+                stdout,
+                MoveTo(x, list_start_y + list_height as u16 + 1),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text(&hint, content_width)),
+                ResetColor
+            )?;
+        }
+    }
+
+    // help line
+    queue!(
+        stdout,
+        MoveTo(x, rows.saturating_sub(5)),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(
+            " space check/uncheck • d delete • i input",
+            content_width
+        )),
+        ResetColor
+    )?;
+
+    Ok(())
+}
+
+fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    let ordered = checklist_task_order(&app.tasks);
+    let count = ordered.len();
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if count > 0 {
+                app.checklist_selected = (app.checklist_selected + 1).min(count - 1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.checklist_selected = app.checklist_selected.saturating_sub(1);
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            if let Some(&task_idx) = ordered.get(app.checklist_selected) {
+                let now = Utc::now();
+                let task = &mut app.tasks[task_idx];
+                if task.progress == Progress::Done {
+                    task.set_progress(Progress::Todo, now);
+                } else {
+                    task.set_progress(Progress::Done, now);
+                }
+                persist(app);
+            }
+        }
+        KeyCode::Char('d') | KeyCode::Delete => {
+            if let Some(&task_idx) = ordered.get(app.checklist_selected) {
+                let id = app.tasks[task_idx].id;
+                app.selected_task_id = Some(id);
+                app.confirm_delete_id = Some(id);
+            }
+        }
+        KeyCode::Char('i') => {
+            app.focus = Focus::Input;
+        }
+        KeyCode::Esc => {
+            app.focus = Focus::Tabs;
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn render_default_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
