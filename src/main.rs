@@ -121,6 +121,14 @@ impl EditField {
             EditField::SubIssues => "Sub-issues",
         }
     }
+
+    fn fields_for(is_child: bool) -> &'static [EditField] {
+        if is_child {
+            &EditField::ALL[..6]
+        } else {
+            &EditField::ALL
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2641,16 +2649,16 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
             }
-            let idx = EditField::ALL
+            let is_child = app
+                .edit_task_id
+                .is_some_and(|id| app.tasks.iter().any(|t| t.id == id && t.is_child()));
+            let fields = EditField::fields_for(is_child);
+            let idx = fields
                 .iter()
                 .position(|f| *f == app.edit_field)
                 .unwrap_or(0);
-            let next = if idx == 0 {
-                EditField::ALL.len() - 1
-            } else {
-                idx - 1
-            };
-            app.edit_field = EditField::ALL[next];
+            let next = if idx == 0 { fields.len() - 1 } else { idx - 1 };
+            app.edit_field = fields[next];
             if app.edit_field == EditField::SubIssues {
                 if let Some(task_id) = app.edit_task_id {
                     let child_count = visible_children_of(&app.tasks, task_id, &app.settings).len();
@@ -2669,12 +2677,16 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
             }
-            let idx = EditField::ALL
+            let is_child = app
+                .edit_task_id
+                .is_some_and(|id| app.tasks.iter().any(|t| t.id == id && t.is_child()));
+            let fields = EditField::fields_for(is_child);
+            let idx = fields
                 .iter()
                 .position(|f| *f == app.edit_field)
                 .unwrap_or(0);
-            let next = (idx + 1) % EditField::ALL.len();
-            app.edit_field = EditField::ALL[next];
+            let next = (idx + 1) % fields.len();
+            app.edit_field = fields[next];
             if app.edit_field == EditField::SubIssues {
                 app.edit_sub_selected = 0;
             }
@@ -2720,6 +2732,23 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             EditField::DueDate => {
                 shift_due_date(app, -1);
             }
+            EditField::SubIssues => {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_ids: Vec<Uuid> =
+                        visible_children_of(&app.tasks, task_id, &app.settings)
+                            .iter()
+                            .map(|&i| app.tasks[i].id)
+                            .collect();
+                    if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
+                        let now = Utc::now();
+                        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == child_id) {
+                            task.retreat_progress(now);
+                        }
+                        sync_parent_progress(&mut app.tasks, child_id, now);
+                        persist(app);
+                    }
+                }
+            }
             _ => {}
         },
         KeyCode::Right | KeyCode::Char('l') => match app.edit_field {
@@ -2728,6 +2757,23 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             }
             EditField::DueDate => {
                 shift_due_date(app, 1);
+            }
+            EditField::SubIssues => {
+                if let Some(task_id) = app.edit_task_id {
+                    let child_ids: Vec<Uuid> =
+                        visible_children_of(&app.tasks, task_id, &app.settings)
+                            .iter()
+                            .map(|&i| app.tasks[i].id)
+                            .collect();
+                    if let Some(&child_id) = child_ids.get(app.edit_sub_selected) {
+                        let now = Utc::now();
+                        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == child_id) {
+                            task.advance_progress(now);
+                        }
+                        sync_parent_progress(&mut app.tasks, child_id, now);
+                        persist(app);
+                    }
+                }
             }
             _ => {}
         },
@@ -6504,11 +6550,20 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     };
     let desc_lines = desc_wrapped.as_ref().map(|w| w.len()).unwrap_or(1).max(1);
 
-    // Sub-issues section.
+    let is_child_task = task.is_child();
     let child_indices = visible_children_of(&app.tasks, task.id, &app.settings);
-    let child_visible = child_indices.len().min(5);
-    // box_height: 9 (base fields) + desc_lines + 2 (separator + header) + child_visible
-    let box_height = (11 + desc_lines as u16 + child_visible as u16).min(rows.saturating_sub(2));
+    let child_visible = if is_child_task {
+        0
+    } else {
+        child_indices.len().min(5)
+    };
+    let sub_section_height = if is_child_task {
+        0
+    } else {
+        2 + child_visible as u16
+    };
+    // box_height: 9 (base fields) + desc_lines + sub_section_height
+    let box_height = (9 + desc_lines as u16 + sub_section_height).min(rows.saturating_sub(2));
     let x0 = (cols.saturating_sub(box_width as u16)) / 2;
     let y0 = (rows.saturating_sub(box_height)) / 2;
 
@@ -6542,7 +6597,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     // Track the current y offset as we render fields.
     let mut y_cursor = y0 + 2;
 
-    for field in EditField::ALL.iter() {
+    for field in EditField::fields_for(is_child_task).iter() {
         let is_current = *field == app.edit_field;
 
         if *field == EditField::Description {
@@ -6769,7 +6824,7 @@ fn render_edit_overlay(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
 
     if app.editing_text {
         let mut cy = y0 + 2;
-        for field in EditField::ALL.iter() {
+        for field in EditField::fields_for(is_child_task).iter() {
             if *field == app.edit_field {
                 break;
             }
