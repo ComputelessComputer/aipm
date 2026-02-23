@@ -912,7 +912,6 @@ fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('i') => {
-            app.tab = Tab::Default;
             app.focus = Focus::Input;
             return Ok(false);
         }
@@ -2856,7 +2855,6 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('i') => {
-            app.tab = Tab::Default;
             app.focus = Focus::Input;
             return Ok(false);
         }
@@ -3020,7 +3018,6 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('i') => {
-            app.tab = Tab::Default;
             app.focus = Focus::Input;
             return Ok(false);
         }
@@ -3242,7 +3239,6 @@ fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('i') => {
-            app.tab = Tab::Default;
             app.focus = Focus::Input;
             return Ok(false);
         }
