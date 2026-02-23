@@ -503,9 +503,6 @@ fn cmd_settings_update(args: &[String]) -> io::Result<()> {
     if let Some(v) = find_flag(args, "--model") {
         settings.model = v;
     }
-    if let Some(v) = find_flag(args, "--api-url") {
-        settings.api_url = v;
-    }
     if let Some(v) = find_flag(args, "--timeout") {
         settings.timeout_secs = v
             .parse::<u64>()

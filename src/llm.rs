@@ -176,27 +176,15 @@ fn build_config(settings: &AiSettings) -> Option<LlmConfig> {
         Provider::OpenAi => "https://api.openai.com/v1/chat/completions",
     };
 
-    let api_url = if !settings.api_url.trim().is_empty() {
-        let saved = settings.api_url.trim();
-        if (provider == Provider::Anthropic
-            && saved == "https://api.openai.com/v1/chat/completions")
-            || (provider == Provider::OpenAi && saved == "https://api.anthropic.com/v1/messages")
-        {
-            default_url.to_string()
-        } else {
-            settings.api_url.clone()
-        }
-    } else {
-        env::var("AIPM_API_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                env::var("AIPM_OPENAI_URL")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .unwrap_or_else(|| default_url.to_string())
-    };
+    let api_url = env::var("AIPM_API_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            env::var("AIPM_OPENAI_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| default_url.to_string());
 
     let timeout = Duration::from_secs(if settings.timeout_secs > 0 {
         settings.timeout_secs

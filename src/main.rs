@@ -145,7 +145,6 @@ enum SettingsField {
     OpenAiKey,
     AnthropicKey,
     Model,
-    ApiUrl,
     Timeout,
     ShowBacklog,
     ShowTodo,
@@ -154,14 +153,13 @@ enum SettingsField {
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 12] = [
+    const ALL: [SettingsField; 11] = [
         SettingsField::OwnerName,
         SettingsField::UserProfile,
         SettingsField::AiEnabled,
         SettingsField::OpenAiKey,
         SettingsField::AnthropicKey,
         SettingsField::Model,
-        SettingsField::ApiUrl,
         SettingsField::Timeout,
         SettingsField::ShowBacklog,
         SettingsField::ShowTodo,
@@ -177,7 +175,6 @@ impl SettingsField {
             SettingsField::OpenAiKey => "OpenAI Key",
             SettingsField::AnthropicKey => "Anthropic Key",
             SettingsField::Model => "Model",
-            SettingsField::ApiUrl => "API URL",
             SettingsField::Timeout => "Timeout (sec)",
             SettingsField::ShowBacklog => "Show Backlog",
             SettingsField::ShowTodo => "Show Todo",
@@ -3099,10 +3096,6 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             SettingsField::Model => {
                 cycle_model(app, true);
             }
-            SettingsField::ApiUrl => {
-                app.settings_buf = app.settings.api_url.clone();
-                app.settings_editing = true;
-            }
             SettingsField::Timeout => {
                 app.settings_buf = app.settings.timeout_secs.to_string();
                 app.settings_editing = true;
@@ -3193,7 +3186,6 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     app.settings.anthropic_api_key = app.settings_buf.clone();
                 }
                 SettingsField::Model => app.settings.model = app.settings_buf.clone(),
-                SettingsField::ApiUrl => app.settings.api_url = app.settings_buf.clone(),
                 SettingsField::Timeout => {
                     if let Ok(secs) = app.settings_buf.parse::<u64>() {
                         app.settings.timeout_secs = secs;
@@ -4792,8 +4784,15 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             )?;
         } else if done {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-        } else if is_child {
-            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        } else {
+            let status_color = match task.progress {
+                Progress::InProgress => Color::Yellow,
+                Progress::Todo => Color::Blue,
+                Progress::Backlog => Color::DarkGrey,
+                Progress::Archived => Color::DarkGrey,
+                Progress::Done => Color::Green,
+            };
+            queue!(stdout, SetForegroundColor(status_color))?;
         }
         let line = format!(
             "{}{} {}{}{}{}{}{}",
@@ -5935,13 +5934,6 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) ->
                     "(default)".to_string()
                 } else {
                     app.settings.model.clone()
-                }
-            }
-            SettingsField::ApiUrl => {
-                if app.settings.api_url.is_empty() {
-                    "(default)".to_string()
-                } else {
-                    app.settings.api_url.clone()
                 }
             }
             SettingsField::Timeout => format!("{}s", app.settings.timeout_secs),

@@ -25,7 +25,6 @@ pub struct AiSettings {
     #[serde(default, skip_serializing)]
     api_key: String,
     pub model: String,
-    pub api_url: String,
     pub timeout_secs: u64,
     #[serde(default = "default_owner_name")]
     pub owner_name: String,
@@ -80,7 +79,6 @@ impl Default for AiSettings {
             anthropic_api_key: String::new(),
             api_key: String::new(),
             model: "claude-sonnet-4-5".to_string(),
-            api_url: String::new(),
             timeout_secs: 60,
             owner_name: String::new(),
             show_backlog: true,
