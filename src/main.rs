@@ -4746,8 +4746,11 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         let task = &app.tasks[task_idx];
         let is_sel = draw_i == sel;
         let y = list_start_y + (draw_i - scroll) as u16;
-        let done = task.progress == Progress::Done;
-        let checkbox = if done { "[x]" } else { "[ ]" };
+        let checkbox = match task.progress {
+            Progress::Done => "[x]",
+            Progress::InProgress => "[·]",
+            _ => "[ ]",
+        };
         let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task.id));
         let expand_icon = if !is_child && has_children {
             if app.checklist_expanded.contains(&task.id) {
@@ -4782,7 +4785,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
                 SetForegroundColor(Color::Black),
                 SetBackgroundColor(Color::White)
             )?;
-        } else if done {
+        } else if task.progress == Progress::Done {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         } else {
             let status_color = match task.progress {
