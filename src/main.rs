@@ -261,6 +261,7 @@ struct App {
 
     input_mode: InputMode,
     checklist_selected: usize,
+    checklist_expanded: std::collections::HashSet<Uuid>,
 
     chat_history: Vec<llm::ChatEntry>,
     last_triage_input: String,
@@ -495,6 +496,7 @@ fn main() -> io::Result<()> {
         pending_memory: None,
         input_mode: InputMode::Chat,
         checklist_selected: 0,
+        checklist_expanded: std::collections::HashSet::new(),
         chat_history: Vec::new(),
         last_triage_input: String::new(),
         input_history: Vec::new(),
@@ -801,6 +803,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         _ => {}
+    }
+
+    if key.code == KeyCode::Char('@') {
+        if let Some(task_id) = get_active_task_id(app) {
+            let short_id = task_id.to_string().chars().take(8).collect::<String>();
+            let tag = format!("@{} ", short_id);
+            let bp = char_byte_pos(&app.input, app.input_cursor);
+            app.input.insert_str(bp, &tag);
+            app.input_cursor += tag.chars().count();
+            app.tab = Tab::Default;
+            app.focus = Focus::Input;
+            return Ok(false);
+        }
     }
 
     match app.tab {
@@ -4146,6 +4161,26 @@ fn resolve_dependency_prefixes(tasks: &[Task], self_id: Uuid, prefixes: &[String
     out
 }
 
+fn get_active_task_id(app: &App) -> Option<Uuid> {
+    match app.tab {
+        Tab::Default => app.selected_task_id,
+        Tab::Timeline => {
+            let indices = sorted_timeline_tasks(&app.tasks);
+            indices
+                .get(app.timeline_selected)
+                .map(|&idx| app.tasks[idx].id)
+        }
+        Tab::Kanban => app.kanban_selected,
+        Tab::Checklist => {
+            let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
+            ordered
+                .get(app.checklist_selected)
+                .map(|&(idx, _)| app.tasks[idx].id)
+        }
+        _ => None,
+    }
+}
+
 fn ensure_default_selection(app: &mut App) {
     let bucket_name = app
         .settings
@@ -4603,9 +4638,13 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
     Ok(())
 }
 
-/// Returns task indices ordered for the checklist: incomplete first (by updated_at desc),
-/// done tasks last (by updated_at desc). Archived tasks are hidden.
-fn checklist_task_order(tasks: &[Task]) -> Vec<usize> {
+/// Returns (task_index, is_child) pairs ordered for the checklist.
+/// Root tasks: incomplete first (by updated_at desc), done last.
+/// When a root task is in `expanded`, its children appear directly after it.
+fn checklist_task_order(
+    tasks: &[Task],
+    expanded: &std::collections::HashSet<Uuid>,
+) -> Vec<(usize, bool)> {
     let mut incomplete: Vec<usize> = tasks
         .iter()
         .enumerate()
@@ -4625,8 +4664,21 @@ fn checklist_task_order(tasks: &[Task]) -> Vec<usize> {
         .map(|(i, _)| i)
         .collect();
     done.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
-
-    incomplete.into_iter().chain(done).collect()
+    let roots: Vec<usize> = incomplete.into_iter().chain(done).collect();
+    let mut result = Vec::with_capacity(roots.len() * 2);
+    for &ri in &roots {
+        result.push((ri, false));
+        if expanded.contains(&tasks[ri].id) {
+            let mut children: Vec<usize> = children_of(tasks, tasks[ri].id);
+            children.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+            for ci in children {
+                if tasks[ci].progress != Progress::Archived {
+                    result.push((ci, true));
+                }
+            }
+        }
+    }
+    result
 }
 
 fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
@@ -4635,7 +4687,6 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
     let (x_margin, _) = choose_layout(width, num_buckets);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
-
     queue!(
         stdout,
         MoveTo(x, 3),
@@ -4644,7 +4695,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         SetAttribute(Attribute::Reset)
     )?;
 
-    let ordered = checklist_task_order(&app.tasks);
+    let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
     let list_start_y = 5u16;
     let list_height = rows.saturating_sub(list_start_y + 4) as usize;
     let sel = app.checklist_selected.min(ordered.len().saturating_sub(1));
@@ -4653,7 +4704,6 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
     } else {
         0
     };
-
     if ordered.is_empty() {
         queue!(
             stdout,
@@ -4664,26 +4714,43 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         )?;
     }
 
-    for (draw_i, &task_idx) in ordered.iter().enumerate().skip(scroll).take(list_height) {
+    let due_col_w = 12usize;
+    let bucket_col_w = 14usize;
+
+    for (draw_i, &(task_idx, is_child)) in ordered.iter().enumerate().skip(scroll).take(list_height)
+    {
         let task = &app.tasks[task_idx];
         let is_sel = draw_i == sel;
         let y = list_start_y + (draw_i - scroll) as u16;
-
         let done = task.progress == Progress::Done;
         let checkbox = if done { "[x]" } else { "[ ]" };
-        let bucket_tag = format!("[{}]", task.bucket);
-        let title_max = content_width.saturating_sub(checkbox.len() + 2 + bucket_tag.len() + 1);
-        let title = clamp_text(&task.title, title_max);
-        let padding =
-            content_width.saturating_sub(checkbox.len() + 1 + title.width() + 1 + bucket_tag.len());
-        let line = format!(
-            " {} {}{}{}",
-            checkbox,
-            title,
-            " ".repeat(padding),
-            bucket_tag
-        );
+        let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task.id));
+        let expand_icon = if !is_child && has_children {
+            if app.checklist_expanded.contains(&task.id) {
+                "▾ "
+            } else {
+                "▸ "
+            }
+        } else if is_child {
+            "  ↳ "
+        } else {
+            "  "
+        };
 
+        let due_str = task
+            .due_date
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let due_display = clamp_text(&due_str, due_col_w);
+        let bucket_display = clamp_text(&task.bucket, bucket_col_w);
+
+        let fixed_cols =
+            expand_icon.width() + checkbox.len() + 1 + 2 + due_col_w + 2 + bucket_col_w;
+        let title_max = content_width.saturating_sub(fixed_cols + 1);
+        let title = clamp_text(&task.title, title_max);
+        let title_pad = title_max.saturating_sub(title.width());
+        let due_pad = due_col_w.saturating_sub(due_display.width());
+        let _bucket_pad = bucket_col_w.saturating_sub(bucket_display.width());
         queue!(stdout, MoveTo(x, y))?;
         if is_sel && app.focus == Focus::Board {
             queue!(
@@ -4693,7 +4760,20 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             )?;
         } else if done {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        } else if is_child {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         }
+        let line = format!(
+            "{}{} {}{}{}{}{}{}",
+            expand_icon,
+            checkbox,
+            title,
+            " ".repeat(title_pad),
+            "  ",
+            due_display,
+            " ".repeat(due_pad.saturating_sub(0) + 2),
+            bucket_display,
+        );
         queue!(
             stdout,
             Print(pad_to_width(
@@ -4703,53 +4783,21 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             ResetColor
         )?;
     }
-
-    // subtask count hint for selected task
-    if let Some(&task_idx) = ordered.get(sel) {
-        let task = &app.tasks[task_idx];
-        let children: Vec<_> = app
-            .tasks
-            .iter()
-            .filter(|t| t.parent_id == Some(task.id))
-            .collect();
-        if !children.is_empty() {
-            let done_count = children
-                .iter()
-                .filter(|t| t.progress == Progress::Done)
-                .count();
-            let hint = format!(
-                " {} subtasks ({}/{} done)",
-                children.len(),
-                done_count,
-                children.len()
-            );
-            queue!(
-                stdout,
-                MoveTo(x, list_start_y + list_height as u16 + 1),
-                SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text(&hint, content_width)),
-                ResetColor
-            )?;
-        }
-    }
-
     // help line
     queue!(
         stdout,
         MoveTo(x, rows.saturating_sub(5)),
         SetForegroundColor(Color::DarkGrey),
         Print(clamp_text(
-            " space check/uncheck • d delete • i input",
+            " enter toggle • space expand • e edit • d delete • i input",
             content_width
         )),
         ResetColor
     )?;
-
     Ok(())
 }
-
 fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
-    let ordered = checklist_task_order(&app.tasks);
+    let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
     let count = ordered.len();
 
     match key.code {
@@ -4761,8 +4809,8 @@ fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Char('k') | KeyCode::Up => {
             app.checklist_selected = app.checklist_selected.saturating_sub(1);
         }
-        KeyCode::Char(' ') | KeyCode::Enter => {
-            if let Some(&task_idx) = ordered.get(app.checklist_selected) {
+        KeyCode::Enter => {
+            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
                 let now = Utc::now();
                 let task = &mut app.tasks[task_idx];
                 if task.progress == Progress::Done {
@@ -4770,11 +4818,38 @@ fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 } else {
                     task.set_progress(Progress::Done, now);
                 }
+                let task_id = app.tasks[task_idx].id;
+                let has_parent = app.tasks[task_idx].parent_id.is_some();
+                if has_parent {
+                    sync_parent_progress(&mut app.tasks, task_id, Utc::now());
+                }
                 persist(app);
             }
         }
+        KeyCode::Char(' ') => {
+            if let Some(&(task_idx, is_child)) = ordered.get(app.checklist_selected) {
+                if !is_child {
+                    let task_id = app.tasks[task_idx].id;
+                    let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task_id));
+                    if has_children {
+                        if app.checklist_expanded.contains(&task_id) {
+                            app.checklist_expanded.remove(&task_id);
+                        } else {
+                            app.checklist_expanded.insert(task_id);
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Char('e') => {
+            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
+                let task_id = app.tasks[task_idx].id;
+                app.selected_task_id = Some(task_id);
+                open_edit_for(app, task_id);
+            }
+        }
         KeyCode::Char('d') | KeyCode::Delete => {
-            if let Some(&task_idx) = ordered.get(app.checklist_selected) {
+            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
                 let id = app.tasks[task_idx].id;
                 app.selected_task_id = Some(id);
                 app.confirm_delete_id = Some(id);
