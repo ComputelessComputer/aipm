@@ -4651,7 +4651,19 @@ fn checklist_task_order(
         })
         .map(|(i, _)| i)
         .collect();
-    incomplete.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+    incomplete.sort_by(|&a, &b| {
+        let ta = &tasks[a];
+        let tb = &tasks[b];
+        tb.priority
+            .cmp(&ta.priority)
+            .then_with(|| match (ta.due_date, tb.due_date) {
+                (Some(da), Some(db)) => da.cmp(&db),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| tb.created_at.cmp(&ta.created_at))
+    });
 
     let mut done: Vec<usize> = tasks
         .iter()
@@ -4659,14 +4671,38 @@ fn checklist_task_order(
         .filter(|(_, t)| t.progress == Progress::Done && t.parent_id.is_none())
         .map(|(i, _)| i)
         .collect();
-    done.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+    done.sort_by(|&a, &b| {
+        let ta = &tasks[a];
+        let tb = &tasks[b];
+        tb.priority
+            .cmp(&ta.priority)
+            .then_with(|| match (ta.due_date, tb.due_date) {
+                (Some(da), Some(db)) => da.cmp(&db),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| tb.created_at.cmp(&ta.created_at))
+    });
     let roots: Vec<usize> = incomplete.into_iter().chain(done).collect();
     let mut result = Vec::with_capacity(roots.len() * 2);
     for &ri in &roots {
         result.push((ri, false));
         if expanded.contains(&tasks[ri].id) {
             let mut children: Vec<usize> = children_of(tasks, tasks[ri].id);
-            children.sort_by(|&a, &b| tasks[b].updated_at.cmp(&tasks[a].updated_at));
+            children.sort_by(|&a, &b| {
+                let ta = &tasks[a];
+                let tb = &tasks[b];
+                tb.priority
+                    .cmp(&ta.priority)
+                    .then_with(|| match (ta.due_date, tb.due_date) {
+                        (Some(da), Some(db)) => da.cmp(&db),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    })
+                    .then_with(|| tb.created_at.cmp(&ta.created_at))
+            });
             for ci in children {
                 if tasks[ci].progress != Progress::Archived {
                     result.push((ci, true));
