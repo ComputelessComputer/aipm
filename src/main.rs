@@ -9,7 +9,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
@@ -32,13 +32,13 @@ use crate::storage::{AiSettings, Storage};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Checklist,
+    Calendar,
     Default,
     Timeline,
     Kanban,
     Settings,
     Suggestions,
 }
-
 const MODEL_OPTIONS: &[&str] = &[
     // Anthropic
     "claude-opus-4-6",
@@ -49,11 +49,11 @@ const MODEL_OPTIONS: &[&str] = &[
     "o3",
     "o4-mini",
 ];
-
 impl Tab {
     fn next(self) -> Tab {
         match self {
-            Tab::Checklist => Tab::Default,
+            Tab::Checklist => Tab::Calendar,
+            Tab::Calendar => Tab::Default,
             Tab::Default => Tab::Timeline,
             Tab::Timeline => Tab::Kanban,
             Tab::Kanban => Tab::Suggestions,
@@ -61,11 +61,11 @@ impl Tab {
             Tab::Settings => Tab::Checklist,
         }
     }
-
     fn prev(self) -> Tab {
         match self {
             Tab::Checklist => Tab::Settings,
-            Tab::Default => Tab::Checklist,
+            Tab::Calendar => Tab::Checklist,
+            Tab::Default => Tab::Calendar,
             Tab::Timeline => Tab::Default,
             Tab::Kanban => Tab::Timeline,
             Tab::Suggestions => Tab::Kanban,
@@ -789,24 +789,30 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('2') => {
+            app.tab = Tab::Calendar;
+            app.focus = Focus::Board;
+            app.status = None;
+            return Ok(false);
+        }
+        KeyCode::Char('3') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('4') => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('5') => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
         }
-        KeyCode::Char('5') => {
+        KeyCode::Char('6') => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -837,6 +843,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
     match app.tab {
         Tab::Checklist => handle_checklist_key(app, key),
+        Tab::Calendar => Ok(false),
         Tab::Default => handle_default_tab_key(app, key),
         Tab::Timeline => handle_timeline_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
@@ -863,21 +870,26 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.status = None;
         }
         KeyCode::Char('2') => {
+            app.tab = Tab::Calendar;
+            app.focus = Focus::Board;
+            app.status = None;
+        }
+        KeyCode::Char('3') => {
             app.tab = Tab::Default;
             app.focus = Focus::Input;
             app.status = None;
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('4') => {
             app.tab = Tab::Timeline;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('5') => {
             app.tab = Tab::Kanban;
             app.focus = Focus::Board;
             app.status = None;
         }
-        KeyCode::Char('5') => {
+        KeyCode::Char('6') => {
             app.tab = Tab::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
@@ -4483,6 +4495,7 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
 
     match app.tab {
         Tab::Checklist => render_checklist_tab(stdout, app, cols, rows)?,
+        Tab::Calendar => render_calendar_tab(stdout, app, cols, rows)?,
         Tab::Default => render_default_tab(stdout, app, cols, rows)?,
         Tab::Timeline => render_timeline_tab(stdout, app, cols, rows)?,
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
@@ -4562,10 +4575,11 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
 
     let left_tabs: &[(Tab, &str)] = &[
         (Tab::Checklist, "1 Checklist"),
-        (Tab::Default, "2 Buckets"),
-        (Tab::Timeline, "3 Timeline"),
-        (Tab::Kanban, "4 Kanban"),
-        (Tab::Suggestions, "5 Suggestions"),
+        (Tab::Calendar, "2 Calendar"),
+        (Tab::Default, "3 Buckets"),
+        (Tab::Timeline, "4 Timeline"),
+        (Tab::Kanban, "5 Kanban"),
+        (Tab::Suggestions, "6 Suggestions"),
     ];
 
     for (tab, label) in left_tabs {
@@ -4868,6 +4882,158 @@ fn checklist_task_order(
         }
     }
     result
+}
+
+fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+    let width = cols as usize;
+    let content_width = width.saturating_sub(2);
+    let x = 1u16;
+    let y_start = 2u16;
+    let available_rows = rows.saturating_sub(7) as usize;
+
+    let today = chrono::Local::now().date_naive();
+    let year = today.year();
+    let month = today.month();
+
+    queue!(
+        stdout,
+        MoveTo(x, y_start),
+        SetAttribute(Attribute::Bold),
+        Print(format!("{}", today.format("%B %Y"))),
+        SetAttribute(Attribute::Reset)
+    )?;
+
+    let weekdays = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+    let cell_w = 4usize;
+    let cal_width = cell_w * 7;
+    let cal_x = x;
+
+    queue!(
+        stdout,
+        MoveTo(cal_x, y_start + 1),
+        SetForegroundColor(Color::DarkGrey)
+    )?;
+    for wd in &weekdays {
+        queue!(stdout, Print(format!("{:>width$}", wd, width = cell_w)))?;
+    }
+    queue!(stdout, ResetColor)?;
+
+    let first_of_month = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    let days_in_month = if month == 12 {
+        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        chrono::NaiveDate::from_ymd_opt(year, month + 1, 1)
+    }
+    .unwrap()
+    .signed_duration_since(first_of_month)
+    .num_days() as u32;
+    let start_weekday = first_of_month.weekday().num_days_from_monday() as usize;
+
+    let mut row = 0usize;
+    let mut col = start_weekday;
+    for day in 1..=days_in_month {
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
+        let y_row = y_start + 2 + row as u16;
+        if y_row >= y_start + available_rows as u16 {
+            break;
+        }
+        queue!(stdout, MoveTo(cal_x + (col * cell_w) as u16, y_row))?;
+        let has_task = app.tasks.iter().any(|t| t.due_date == Some(date));
+        if date == today {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Black),
+                SetBackgroundColor(Color::White),
+                Print(format!("{:>width$}", day, width = cell_w)),
+                ResetColor
+            )?;
+        } else if has_task {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                Print(format!("{:>width$}", day, width = cell_w)),
+                ResetColor
+            )?;
+        } else {
+            queue!(stdout, Print(format!("{:>width$}", day, width = cell_w)))?;
+        }
+        col += 1;
+        if col >= 7 {
+            col = 0;
+            row += 1;
+        }
+    }
+
+    let events_x = (cal_width + 4) as u16 + cal_x;
+    let events_width = content_width.saturating_sub(cal_width + 4);
+    if events_width > 10 {
+        queue!(
+            stdout,
+            MoveTo(events_x, y_start),
+            SetAttribute(Attribute::Bold),
+            Print(clamp_text("Tasks with due dates", events_width)),
+            SetAttribute(Attribute::Reset)
+        )?;
+
+        let mut tasks_with_dates: Vec<&model::Task> =
+            app.tasks.iter().filter(|t| t.due_date.is_some()).collect();
+        tasks_with_dates.sort_by_key(|t| t.due_date);
+
+        for (i, task) in tasks_with_dates.iter().enumerate() {
+            let y_row = y_start + 1 + i as u16;
+            if y_row >= y_start + available_rows as u16 {
+                break;
+            }
+            let date_str = task
+                .due_date
+                .map(|d| d.format("%m/%d").to_string())
+                .unwrap_or_default();
+            let short_id = task.id.to_string().chars().take(8).collect::<String>();
+            let status_icon = match task.progress {
+                model::Progress::Done => "\u{2713}",
+                model::Progress::InProgress => "\u{25d0}",
+                model::Progress::Todo => "\u{25cb}",
+                model::Progress::Backlog => "\u{b7}",
+                model::Progress::Archived => "\u{2298}",
+            };
+            let entry = format!("{} {} {} {}", date_str, status_icon, short_id, task.title);
+            let status_color = match task.progress {
+                model::Progress::Done => Color::DarkGrey,
+                model::Progress::InProgress => Color::Yellow,
+                model::Progress::Todo => Color::Blue,
+                model::Progress::Backlog => Color::DarkGrey,
+                model::Progress::Archived => Color::DarkGrey,
+            };
+            queue!(
+                stdout,
+                MoveTo(events_x, y_row),
+                SetForegroundColor(status_color),
+                Print(clamp_text(&entry, events_width)),
+                ResetColor
+            )?;
+        }
+        if tasks_with_dates.is_empty() {
+            queue!(
+                stdout,
+                MoveTo(events_x, y_start + 1),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text("No tasks with due dates", events_width)),
+                ResetColor
+            )?;
+        }
+    }
+
+    queue!(
+        stdout,
+        MoveTo(x, rows.saturating_sub(5)),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(
+            " Calendar view \u{2022} tasks with due dates highlighted in cyan",
+            content_width,
+        )),
+        ResetColor
+    )?;
+    Ok(())
 }
 
 fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
