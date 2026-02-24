@@ -1,8 +1,7 @@
 mod ai;
-mod calendar;
 mod cli;
+mod google;
 mod llm;
-mod mail;
 mod model;
 mod storage;
 
@@ -140,6 +139,7 @@ enum BucketEditField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsField {
+    GoogleAccount,
     OwnerName,
     UserProfile,
     AiEnabled,
@@ -154,7 +154,8 @@ enum SettingsField {
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 11] = [
+    const ALL: [SettingsField; 12] = [
+        SettingsField::GoogleAccount,
         SettingsField::OwnerName,
         SettingsField::UserProfile,
         SettingsField::AiEnabled,
@@ -170,6 +171,7 @@ impl SettingsField {
 
     fn label(self) -> &'static str {
         match self {
+            SettingsField::GoogleAccount => "Google",
             SettingsField::OwnerName => "Owner Name",
             SettingsField::UserProfile => "About You",
             SettingsField::AiEnabled => "AI Enabled",
@@ -280,9 +282,13 @@ struct App {
     suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
     task_email_map: std::collections::HashMap<Uuid, String>,
 
-    calendar_events: Vec<calendar::CalendarEvent>,
+    calendar_events: Vec<google::CalendarEvent>,
     calendar_loading: bool,
-    calendar_rx: Option<mpsc::Receiver<Vec<calendar::CalendarEvent>>>,
+    calendar_rx: Option<mpsc::Receiver<Vec<google::CalendarEvent>>>,
+
+    data_dir: Option<std::path::PathBuf>,
+    google_connected: bool,
+    google_auth_rx: Option<mpsc::Receiver<Result<google::GoogleToken, String>>>,
 
     esc_count: u8,
     esc_last: Instant,
@@ -306,60 +312,55 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn spawn_calendar_fetch() -> mpsc::Receiver<Vec<calendar::CalendarEvent>> {
+fn spawn_calendar_fetch(
+    data_dir: std::path::PathBuf,
+) -> mpsc::Receiver<Vec<google::CalendarEvent>> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || match calendar::get_upcoming_events(14) {
-        Ok(events) => {
-            let _ = tx.send(events);
-        }
-        Err(_) => {
-            let _ = tx.send(Vec::new());
-        }
+    std::thread::spawn(move || {
+        let events = google::get_valid_token(&data_dir)
+            .and_then(|token| google::get_upcoming_events(&token, 14))
+            .unwrap_or_default();
+        let _ = tx.send(events);
     });
     rx
 }
 
-fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
+fn spawn_email_poller(
+    data_dir: std::path::PathBuf,
+    settings: AiSettings,
+) -> mpsc::Receiver<EmailEvent> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        if !settings.email_suggestions_enabled {
-            return;
-        }
-
         let mut tracked_email_ids = std::collections::HashSet::<String>::new();
-
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
-
-            let emails = match mail::get_recent_emails(10) {
+            let token = match google::get_valid_token(&data_dir) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let emails = match google::get_recent_emails(&token, 10) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-
             let current_unread_ids: std::collections::HashSet<String> = emails
                 .iter()
                 .filter(|e| !e.is_read)
                 .map(|e| e.id.clone())
                 .collect();
-
             let archived: Vec<String> = tracked_email_ids
                 .iter()
                 .filter(|id| !current_unread_ids.contains(*id))
                 .cloned()
                 .collect();
-
             for email_id in archived {
                 let _ = tx.send(EmailEvent::Archived(email_id.clone()));
                 tracked_email_ids.remove(&email_id);
             }
-
             for email in emails {
                 if email.is_read {
                     continue;
                 }
-
                 tracked_email_ids.insert(email.id.clone());
-
                 let content = email.content.as_deref().unwrap_or("");
                 let filtered = match llm::filter_email_for_suggestions(
                     &settings,
@@ -370,7 +371,6 @@ fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
                     Ok(Some(task)) => task,
                     _ => continue,
                 };
-
                 let priority = match filtered.priority.to_ascii_lowercase().as_str() {
                     "low" => Priority::Low,
                     "medium" => Priority::Medium,
@@ -378,7 +378,6 @@ fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
                     "critical" => Priority::Critical,
                     _ => Priority::Medium,
                 };
-
                 let suggestion = Suggestion {
                     id: uuid::Uuid::new_v4(),
                     email_id: email.id.clone(),
@@ -387,7 +386,6 @@ fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
                     priority,
                     created_at: chrono::Utc::now(),
                 };
-
                 let _ = tx.send(EmailEvent::NewSuggestion(suggestion));
             }
         }
@@ -530,6 +528,11 @@ fn main() -> io::Result<()> {
         calendar_events: Vec::new(),
         calendar_loading: false,
         calendar_rx: None,
+        data_dir: storage::data_dir(),
+        google_connected: storage::data_dir()
+            .and_then(|d| google::load_token(&d))
+            .is_some(),
+        google_auth_rx: None,
         esc_count: 0,
         esc_last: Instant::now(),
     };
@@ -539,7 +542,11 @@ fn main() -> io::Result<()> {
     }
 
     app.update_rx = Some(spawn_update_check());
-    app.suggestions_rx = Some(spawn_email_poller(app.settings.clone()));
+    if app.google_connected {
+        if let Some(ref dir) = app.data_dir {
+            app.suggestions_rx = Some(spawn_email_poller(dir.clone(), app.settings.clone()));
+        }
+    }
 
     ensure_default_selection(&mut app);
 
@@ -567,6 +574,10 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         }
 
         if poll_calendar(app) {
+            needs_redraw = true;
+        }
+
+        if poll_google_auth(app) {
             needs_redraw = true;
         }
 
@@ -817,9 +828,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = Tab::Calendar;
             app.focus = Focus::Board;
             app.status = None;
-            if !app.calendar_loading && app.calendar_events.is_empty() {
+            if app.google_connected && !app.calendar_loading && app.calendar_events.is_empty() {
                 app.calendar_loading = true;
-                app.calendar_rx = Some(spawn_calendar_fetch());
+                if let Some(ref dir) = app.data_dir {
+                    app.calendar_rx = Some(spawn_calendar_fetch(dir.clone()));
+                }
             }
             return Ok(false);
         }
@@ -902,9 +915,11 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = Tab::Calendar;
             app.focus = Focus::Board;
             app.status = None;
-            if !app.calendar_loading && app.calendar_events.is_empty() {
+            if app.google_connected && !app.calendar_loading && app.calendar_events.is_empty() {
                 app.calendar_loading = true;
-                app.calendar_rx = Some(spawn_calendar_fetch());
+                if let Some(ref dir) = app.data_dir {
+                    app.calendar_rx = Some(spawn_calendar_fetch(dir.clone()));
+                }
             }
         }
         KeyCode::Char('3') => {
@@ -3252,6 +3267,33 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 app.settings.show_done = !app.settings.show_done;
                 persist_settings(app);
             }
+            SettingsField::GoogleAccount => {
+                if app.google_connected {
+                    if let Some(ref dir) = app.data_dir {
+                        google::delete_token(dir);
+                    }
+                    app.google_connected = false;
+                    app.calendar_events.clear();
+                    app.calendar_loading = false;
+                    app.status = Some((
+                        "Google account disconnected".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
+                } else if let Some(ref dir) = app.data_dir {
+                    let dir_clone = dir.clone();
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(google::authorize(&dir_clone));
+                    });
+                    app.google_auth_rx = Some(rx);
+                    app.status = Some((
+                        "Opening browser for Google sign-in...".to_string(),
+                        Instant::now(),
+                        false,
+                    ));
+                }
+            }
         },
         KeyCode::Left | KeyCode::Right => match app.settings_field {
             SettingsField::AiEnabled => {
@@ -3368,14 +3410,6 @@ fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Char('i') => {
             app.focus = Focus::Input;
-            return Ok(false);
-        }
-        KeyCode::Char('e') => {
-            app.settings.email_suggestions_enabled = !app.settings.email_suggestions_enabled;
-            persist_settings(app);
-            if app.settings.email_suggestions_enabled && app.suggestions_rx.is_none() {
-                app.suggestions_rx = Some(spawn_email_poller(app.settings.clone()));
-            }
             return Ok(false);
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -4027,6 +4061,39 @@ fn poll_calendar(app: &mut App) -> bool {
             app.calendar_rx = None;
             return true;
         }
+    }
+    false
+}
+
+fn poll_google_auth(app: &mut App) -> bool {
+    let result = match &app.google_auth_rx {
+        Some(rx) => rx.try_recv().ok(),
+        None => None,
+    };
+    if let Some(result) = result {
+        app.google_auth_rx = None;
+        match result {
+            Ok(_token) => {
+                app.google_connected = true;
+                app.status = Some((
+                    "Google account connected!".to_string(),
+                    Instant::now(),
+                    false,
+                ));
+                if let Some(ref dir) = app.data_dir {
+                    app.calendar_loading = true;
+                    app.calendar_rx = Some(spawn_calendar_fetch(dir.clone()));
+                    if app.suggestions_rx.is_none() {
+                        app.suggestions_rx =
+                            Some(spawn_email_poller(dir.clone(), app.settings.clone()));
+                    }
+                }
+            }
+            Err(e) => {
+                app.status = Some((format!("Google auth failed: {e}"), Instant::now(), true));
+            }
+        }
+        return true;
     }
     false
 }
@@ -6280,7 +6347,10 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 )?;
                 let title_max = col_width.saturating_sub(prefix.width());
                 let title_text = task.title.clone();
-                queue!(stdout, Print(clamp_text(&title_text, title_max)))?;
+                queue!(
+                    stdout,
+                    Print(pad_to_width(&clamp_text(&title_text, title_max), title_max))
+                )?;
             }
 
             // ── Line 2: bucket + due date ──
@@ -6306,7 +6376,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 queue!(
                     stdout,
                     SetForegroundColor(meta_color),
-                    Print(clamp_text(&meta_line, col_width)),
+                    Print(pad_to_width(&clamp_text(&meta_line, col_width), col_width)),
                     ResetColor
                 )?;
             }
@@ -6370,6 +6440,13 @@ fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) ->
         let is_current = *field == app.settings_field;
 
         let value = match field {
+            SettingsField::GoogleAccount => {
+                if app.google_connected {
+                    "\u{2713} Connected".to_string()
+                } else {
+                    "Not connected".to_string()
+                }
+            }
             SettingsField::OwnerName => {
                 if app.settings.owner_name.trim().is_empty() {
                     "(not set)".to_string()
@@ -6586,13 +6663,17 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16)
         stdout,
         MoveTo(x, 3),
         SetAttribute(Attribute::Bold),
-        Print(" Email Suggestions"),
+        Print(" Gmail Suggestions"),
         SetAttribute(Attribute::Reset)
     )?;
 
-    let enabled = app.settings.email_suggestions_enabled;
-    let status_label = if enabled { "On" } else { "Off" };
-    let status_color = if enabled {
+    let connected = app.google_connected;
+    let status_label = if connected {
+        "Connected"
+    } else {
+        "Not connected"
+    };
+    let status_color = if connected {
         Color::Green
     } else {
         Color::DarkGrey
@@ -6600,23 +6681,20 @@ fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16)
     queue!(
         stdout,
         MoveTo(x, 5),
-        Print(" Apple Mail: "),
+        Print(" Gmail: "),
         SetForegroundColor(status_color),
         SetAttribute(Attribute::Bold),
         Print(status_label),
         SetAttribute(Attribute::Reset),
-        ResetColor,
-        SetForegroundColor(Color::DarkGrey),
-        Print("  (e to toggle)"),
         ResetColor
     )?;
 
-    if !enabled {
+    if !connected {
         queue!(
             stdout,
             MoveTo(x, 7),
             SetForegroundColor(Color::DarkGrey),
-            Print(" Enable to poll Apple Mail for actionable emails."),
+            Print(" Connect Google in Settings (0) to get Gmail suggestions."),
             ResetColor
         )?;
     } else if app.suggestions.is_empty() {

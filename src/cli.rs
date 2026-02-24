@@ -566,11 +566,12 @@ fn run_suggestions_cmd(args: &[String]) -> io::Result<()> {
 
 fn cmd_suggestions_list() -> io::Result<()> {
     let (_, _, settings) = load();
-    if !settings.email_suggestions_enabled {
-        die("Email suggestions are not enabled. Enable it in the Suggestions tab (0) first.");
-    }
-
-    let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
+    let data_dir = match crate::storage::data_dir() {
+        Some(d) => d,
+        None => die("Cannot determine data directory."),
+    };
+    let token = crate::google::get_valid_token(&data_dir).map_err(io::Error::other)?;
+    let emails = crate::google::get_recent_emails(&token, 10).map_err(io::Error::other)?;
 
     let unread: Vec<_> = emails.iter().filter(|e| !e.is_read).collect();
 
@@ -608,11 +609,12 @@ fn cmd_suggestions_sync(args: &[String]) -> io::Result<()> {
         s.snapshot("suggestions sync");
     }
 
-    if !settings.email_suggestions_enabled {
-        die("Email suggestions are not enabled. Enable it in the Suggestions tab (0) first.");
-    }
-
-    let emails = crate::mail::get_recent_emails(10).map_err(io::Error::other)?;
+    let data_dir = match crate::storage::data_dir() {
+        Some(d) => d,
+        None => die("Cannot determine data directory."),
+    };
+    let token = crate::google::get_valid_token(&data_dir).map_err(io::Error::other)?;
+    let emails = crate::google::get_recent_emails(&token, 10).map_err(io::Error::other)?;
 
     let limit = if let Some(limit_str) = find_flag(args, "--limit") {
         limit_str.parse::<usize>().unwrap_or(10)

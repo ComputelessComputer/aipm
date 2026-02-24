@@ -736,7 +736,7 @@ impl Storage {
 // Data directory
 // ---------------------------------------------------------------------------
 
-fn data_dir() -> Option<PathBuf> {
+pub fn data_dir() -> Option<PathBuf> {
     if let Ok(path) = env::var("AIPM_DATA_DIR") {
         if !path.trim().is_empty() {
             return Some(PathBuf::from(path));
