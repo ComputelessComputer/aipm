@@ -1,4 +1,5 @@
 mod ai;
+mod calendar;
 mod cli;
 mod llm;
 mod mail;
@@ -279,6 +280,10 @@ struct App {
     suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
     task_email_map: std::collections::HashMap<Uuid, String>,
 
+    calendar_events: Vec<calendar::CalendarEvent>,
+    calendar_loading: bool,
+    calendar_rx: Option<mpsc::Receiver<Vec<calendar::CalendarEvent>>>,
+
     esc_count: u8,
     esc_last: Instant,
 }
@@ -299,6 +304,19 @@ impl Drop for TerminalGuard {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(stdout, Show, DisableBracketedPaste, LeaveAlternateScreen);
     }
+}
+
+fn spawn_calendar_fetch() -> mpsc::Receiver<Vec<calendar::CalendarEvent>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || match calendar::get_upcoming_events(14) {
+        Ok(events) => {
+            let _ = tx.send(events);
+        }
+        Err(_) => {
+            let _ = tx.send(Vec::new());
+        }
+    });
+    rx
 }
 
 fn spawn_email_poller(settings: AiSettings) -> mpsc::Receiver<EmailEvent> {
@@ -509,6 +527,9 @@ fn main() -> io::Result<()> {
         suggestions_selected: 0,
         suggestions_rx: None,
         task_email_map: std::collections::HashMap::new(),
+        calendar_events: Vec::new(),
+        calendar_loading: false,
+        calendar_rx: None,
         esc_count: 0,
         esc_last: Instant::now(),
     };
@@ -542,6 +563,10 @@ fn run_app(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         }
 
         if poll_suggestions(app) {
+            needs_redraw = true;
+        }
+
+        if poll_calendar(app) {
             needs_redraw = true;
         }
 
@@ -792,6 +817,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = Tab::Calendar;
             app.focus = Focus::Board;
             app.status = None;
+            if !app.calendar_loading && app.calendar_events.is_empty() {
+                app.calendar_loading = true;
+                app.calendar_rx = Some(spawn_calendar_fetch());
+            }
             return Ok(false);
         }
         KeyCode::Char('3') => {
@@ -873,6 +902,10 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.tab = Tab::Calendar;
             app.focus = Focus::Board;
             app.status = None;
+            if !app.calendar_loading && app.calendar_events.is_empty() {
+                app.calendar_loading = true;
+                app.calendar_rx = Some(spawn_calendar_fetch());
+            }
         }
         KeyCode::Char('3') => {
             app.tab = Tab::Default;
@@ -3986,6 +4019,18 @@ fn poll_suggestions(app: &mut App) -> bool {
     has_new
 }
 
+fn poll_calendar(app: &mut App) -> bool {
+    if let Some(rx) = &app.calendar_rx {
+        if let Ok(events) = rx.try_recv() {
+            app.calendar_events = events;
+            app.calendar_loading = false;
+            app.calendar_rx = None;
+            return true;
+        }
+    }
+    false
+}
+
 /// Apply a TaskUpdate to a task, returning true if anything changed.
 fn apply_update(
     task: &mut Task,
@@ -4967,59 +5012,96 @@ fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let events_x = (cal_width + 4) as u16 + cal_x;
     let events_width = content_width.saturating_sub(cal_width + 4);
     if events_width > 10 {
+        let mut y_cur = y_start;
+
+        if !app.calendar_events.is_empty() {
+            queue!(
+                stdout,
+                MoveTo(events_x, y_cur),
+                SetAttribute(Attribute::Bold),
+                Print(clamp_text("Upcoming events", events_width)),
+                SetAttribute(Attribute::Reset)
+            )?;
+            y_cur += 1;
+            for evt in &app.calendar_events {
+                if y_cur >= y_start + available_rows as u16 {
+                    break;
+                }
+                let entry = format!("{} • {} [{}]", evt.start_date, evt.title, evt.calendar_name);
+                queue!(
+                    stdout,
+                    MoveTo(events_x, y_cur),
+                    SetForegroundColor(Color::Magenta),
+                    Print(clamp_text(&entry, events_width)),
+                    ResetColor
+                )?;
+                y_cur += 1;
+            }
+            y_cur += 1;
+        } else if app.calendar_loading {
+            queue!(
+                stdout,
+                MoveTo(events_x, y_cur),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text("Loading calendar events...", events_width)),
+                ResetColor
+            )?;
+            y_cur += 2;
+        }
+
         queue!(
             stdout,
-            MoveTo(events_x, y_start),
+            MoveTo(events_x, y_cur),
             SetAttribute(Attribute::Bold),
             Print(clamp_text("Tasks with due dates", events_width)),
             SetAttribute(Attribute::Reset)
         )?;
-
+        y_cur += 1;
         let mut tasks_with_dates: Vec<&model::Task> =
             app.tasks.iter().filter(|t| t.due_date.is_some()).collect();
         tasks_with_dates.sort_by_key(|t| t.due_date);
-
-        for (i, task) in tasks_with_dates.iter().enumerate() {
-            let y_row = y_start + 1 + i as u16;
-            if y_row >= y_start + available_rows as u16 {
-                break;
-            }
-            let date_str = task
-                .due_date
-                .map(|d| d.format("%m/%d").to_string())
-                .unwrap_or_default();
-            let short_id = task.id.to_string().chars().take(8).collect::<String>();
-            let status_icon = match task.progress {
-                model::Progress::Done => "\u{2713}",
-                model::Progress::InProgress => "\u{25d0}",
-                model::Progress::Todo => "\u{25cb}",
-                model::Progress::Backlog => "\u{b7}",
-                model::Progress::Archived => "\u{2298}",
-            };
-            let entry = format!("{} {} {} {}", date_str, status_icon, short_id, task.title);
-            let status_color = match task.progress {
-                model::Progress::Done => Color::DarkGrey,
-                model::Progress::InProgress => Color::Yellow,
-                model::Progress::Todo => Color::Blue,
-                model::Progress::Backlog => Color::DarkGrey,
-                model::Progress::Archived => Color::DarkGrey,
-            };
-            queue!(
-                stdout,
-                MoveTo(events_x, y_row),
-                SetForegroundColor(status_color),
-                Print(clamp_text(&entry, events_width)),
-                ResetColor
-            )?;
-        }
         if tasks_with_dates.is_empty() {
             queue!(
                 stdout,
-                MoveTo(events_x, y_start + 1),
+                MoveTo(events_x, y_cur),
                 SetForegroundColor(Color::DarkGrey),
                 Print(clamp_text("No tasks with due dates", events_width)),
                 ResetColor
             )?;
+        } else {
+            for task in &tasks_with_dates {
+                if y_cur >= y_start + available_rows as u16 {
+                    break;
+                }
+                let date_str = task
+                    .due_date
+                    .map(|d| d.format("%m/%d").to_string())
+                    .unwrap_or_default();
+                let short_id = task.id.to_string().chars().take(8).collect::<String>();
+                let status_icon = match task.progress {
+                    model::Progress::Done => "\u{2713}",
+                    model::Progress::InProgress => "\u{25d0}",
+                    model::Progress::Todo => "\u{25cb}",
+                    model::Progress::Backlog => "\u{b7}",
+                    model::Progress::Archived => "\u{2298}",
+                };
+                let entry = format!("{} {} {} {}", date_str, status_icon, short_id, task.title);
+                let status_color = match task.progress {
+                    model::Progress::Done => Color::DarkGrey,
+                    model::Progress::InProgress => Color::Yellow,
+                    model::Progress::Todo => Color::Blue,
+                    model::Progress::Backlog => Color::DarkGrey,
+                    model::Progress::Archived => Color::DarkGrey,
+                };
+                queue!(
+                    stdout,
+                    MoveTo(events_x, y_cur),
+                    SetForegroundColor(status_color),
+                    Print(clamp_text(&entry, events_width)),
+                    ResetColor
+                )?;
+                y_cur += 1;
+            }
         }
     }
 
