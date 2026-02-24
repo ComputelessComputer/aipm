@@ -292,6 +292,7 @@ struct App {
 
     esc_count: u8,
     esc_last: Instant,
+    autocomplete_last_height: usize,
 }
 
 struct TerminalGuard;
@@ -535,6 +536,7 @@ fn main() -> io::Result<()> {
         google_auth_rx: None,
         esc_count: 0,
         esc_last: Instant::now(),
+        autocomplete_last_height: 0,
     };
 
     if auto_archive_tasks(&mut app.tasks) {
@@ -4715,7 +4717,7 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
     Ok(())
 }
 
-fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
+fn render_input_bar(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
     let num_buckets = app.settings.buckets.len().max(1);
     let (x_margin, _) = choose_layout(width, num_buckets);
@@ -4833,80 +4835,96 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
         ResetColor
     )?;
 
-    // @ autocomplete dropdown.
+    // @ and / autocomplete dropdown.
     if app.focus == Focus::Input {
+        const MAX_SHOW: usize = 8;
         let completions = at_completions(&app.tasks, &app.input, app.input_cursor);
+        let slash_comps = if completions.is_empty() {
+            slash_completions(&app.input, app.input_cursor)
+        } else {
+            Vec::new()
+        };
+
+        let current_height = if !completions.is_empty() {
+            completions.len().min(MAX_SHOW)
+        } else {
+            slash_comps.len().min(MAX_SHOW)
+        };
+
+        if current_height < app.autocomplete_last_height {
+            let blank = pad_to_width("", content_width);
+            for i in current_height..app.autocomplete_last_height {
+                let y_row = y_sep_top.saturating_sub(1 + i as u16);
+                queue!(stdout, MoveTo(x, y_row), Print(&blank))?;
+            }
+        }
+        app.autocomplete_last_height = current_height;
+
         if !completions.is_empty() {
-            const MAX_SHOW: usize = 8;
-            let show = completions.len().min(MAX_SHOW);
-            if show > 0 {
-                let sel = app
-                    .at_autocomplete_selected
-                    .min(completions.len().saturating_sub(1));
-                let scroll = if sel >= show { sel - show + 1 } else { 0 };
-                for (draw_i, (short_id, title, bucket)) in
-                    completions.iter().enumerate().skip(scroll).take(show)
-                {
-                    let row_from_bottom = show - (draw_i - scroll) - 1;
-                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
-                    let label = format!(" {} {} [{}]", short_id, title, bucket);
-                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
-                    queue!(stdout, MoveTo(x, y_row))?;
-                    if draw_i == sel {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::Black),
-                            SetBackgroundColor(Color::White),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    } else {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::White),
-                            SetBackgroundColor(Color::DarkGrey),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    }
+            let show = current_height;
+            let sel = app
+                .at_autocomplete_selected
+                .min(completions.len().saturating_sub(1));
+            let scroll = if sel >= show { sel - show + 1 } else { 0 };
+            for (draw_i, (short_id, title, bucket)) in
+                completions.iter().enumerate().skip(scroll).take(show)
+            {
+                let row_from_bottom = show - (draw_i - scroll) - 1;
+                let y_row = y_sep_top - 1 - row_from_bottom as u16;
+                let label = format!(" {} {} [{}]", short_id, title, bucket);
+                let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
+                queue!(stdout, MoveTo(x, y_row))?;
+                if draw_i == sel {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::White),
+                        Print(&padded),
+                        ResetColor
+                    )?;
+                } else {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::White),
+                        SetBackgroundColor(Color::DarkGrey),
+                        Print(&padded),
+                        ResetColor
+                    )?;
                 }
             }
-        } else {
-            let slash_comps = slash_completions(&app.input, app.input_cursor);
-            if !slash_comps.is_empty() {
-                const MAX_SHOW: usize = 8;
-                let show = slash_comps.len().min(MAX_SHOW);
-                let sel = app
-                    .slash_autocomplete_selected
-                    .min(slash_comps.len().saturating_sub(1));
-                let scroll = if sel >= show { sel - show + 1 } else { 0 };
-                for (draw_i, (cmd, desc)) in slash_comps.iter().enumerate().skip(scroll).take(show)
-                {
-                    let row_from_bottom = show - (draw_i - scroll) - 1;
-                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
-                    let label = format!(" /{} — {}", cmd, desc);
-                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
-                    queue!(stdout, MoveTo(x, y_row))?;
-                    if draw_i == sel {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::Black),
-                            SetBackgroundColor(Color::White),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    } else {
-                        queue!(
-                            stdout,
-                            SetForegroundColor(Color::White),
-                            SetBackgroundColor(Color::DarkGrey),
-                            Print(&padded),
-                            ResetColor
-                        )?;
-                    }
+        } else if !slash_comps.is_empty() {
+            let show = current_height;
+            let sel = app
+                .slash_autocomplete_selected
+                .min(slash_comps.len().saturating_sub(1));
+            let scroll = if sel >= show { sel - show + 1 } else { 0 };
+            for (draw_i, (cmd, desc)) in slash_comps.iter().enumerate().skip(scroll).take(show) {
+                let row_from_bottom = show - (draw_i - scroll) - 1;
+                let y_row = y_sep_top - 1 - row_from_bottom as u16;
+                let label = format!(" /{} \u{2014} {}", cmd, desc);
+                let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
+                queue!(stdout, MoveTo(x, y_row))?;
+                if draw_i == sel {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::White),
+                        Print(&padded),
+                        ResetColor
+                    )?;
+                } else {
+                    queue!(
+                        stdout,
+                        SetForegroundColor(Color::White),
+                        SetBackgroundColor(Color::DarkGrey),
+                        Print(&padded),
+                        ResetColor
+                    )?;
                 }
             }
         }
+    } else {
+        app.autocomplete_last_height = 0;
     }
 
     // Cursor.
