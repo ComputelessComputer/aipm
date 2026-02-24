@@ -269,6 +269,7 @@ struct App {
     input_saved: String,
 
     at_autocomplete_selected: usize,
+    slash_autocomplete_selected: usize,
 
     update_rx: Option<mpsc::Receiver<String>>,
 
@@ -502,6 +503,7 @@ fn main() -> io::Result<()> {
         input_history_index: None,
         input_saved: String::new(),
         at_autocomplete_selected: 0,
+        slash_autocomplete_selected: 0,
         update_rx: None,
         suggestions: Vec::new(),
         suggestions_selected: 0,
@@ -1148,7 +1150,78 @@ fn input_has_at_prefix(input: &str, cursor: usize) -> bool {
     active_at_query(input, cursor).is_some()
 }
 
+fn active_slash_query(input: &str, cursor: usize) -> Option<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let end = cursor.min(chars.len());
+    let mut start = end;
+    while start > 0 && chars[start - 1] != ' ' {
+        start -= 1;
+    }
+    if start < end && chars[start] == '/' {
+        Some(chars[start + 1..end].iter().collect())
+    } else {
+        None
+    }
+}
+
+fn slash_completions(input: &str, cursor: usize) -> Vec<(&'static str, &'static str)> {
+    let query = match active_slash_query(input, cursor) {
+        Some(q) => q,
+        None => return Vec::new(),
+    };
+    let all_commands: &[(&str, &str)] = &[
+        ("clear", "Clear AI chat history"),
+        ("buckets", "List all buckets"),
+        ("bucket add", "Add a new bucket"),
+        ("bucket rename", "Rename a bucket"),
+        ("organize", "AI restructures all tasks"),
+        ("exit", "Quit the app"),
+    ];
+    let query_lower = query.to_lowercase();
+    all_commands
+        .iter()
+        .filter(|(cmd, _)| cmd.starts_with(&query_lower) || query_lower.is_empty())
+        .copied()
+        .collect()
+}
+
 fn handle_input_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    // / command autocomplete interception.
+    let slash_comps = slash_completions(&app.input, app.input_cursor);
+    if !slash_comps.is_empty() {
+        match key.code {
+            KeyCode::Up => {
+                if app.slash_autocomplete_selected == 0 {
+                    app.slash_autocomplete_selected = slash_comps.len() - 1;
+                } else {
+                    app.slash_autocomplete_selected -= 1;
+                }
+                return Ok(false);
+            }
+            KeyCode::Down => {
+                app.slash_autocomplete_selected =
+                    (app.slash_autocomplete_selected + 1) % slash_comps.len();
+                return Ok(false);
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                let sel = app
+                    .slash_autocomplete_selected
+                    .min(slash_comps.len().saturating_sub(1));
+                let (cmd, _) = slash_comps[sel];
+                let replacement = format!("/{}", cmd);
+                let (new_input, new_cursor) =
+                    replace_at_token(&app.input, app.input_cursor, &replacement);
+                app.input = new_input;
+                app.input_cursor = new_cursor;
+                app.slash_autocomplete_selected = 0;
+                return Ok(false);
+            }
+            _ => {
+                app.slash_autocomplete_selected = 0;
+            }
+        }
+    }
+
     // @ autocomplete interception.
     let completions = at_completions(&app.tasks, &app.input, app.input_cursor);
     if !completions.is_empty() {
@@ -4644,6 +4717,41 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
                     let row_from_bottom = show - (draw_i - scroll) - 1;
                     let y_row = y_sep_top - 1 - row_from_bottom as u16;
                     let label = format!(" {} {} [{}]", short_id, title, bucket);
+                    let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
+                    queue!(stdout, MoveTo(x, y_row))?;
+                    if draw_i == sel {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::White),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    } else {
+                        queue!(
+                            stdout,
+                            SetForegroundColor(Color::White),
+                            SetBackgroundColor(Color::DarkGrey),
+                            Print(&padded),
+                            ResetColor
+                        )?;
+                    }
+                }
+            }
+        } else {
+            let slash_comps = slash_completions(&app.input, app.input_cursor);
+            if !slash_comps.is_empty() {
+                const MAX_SHOW: usize = 8;
+                let show = slash_comps.len().min(MAX_SHOW);
+                let sel = app
+                    .slash_autocomplete_selected
+                    .min(slash_comps.len().saturating_sub(1));
+                let scroll = if sel >= show { sel - show + 1 } else { 0 };
+                for (draw_i, (cmd, desc)) in slash_comps.iter().enumerate().skip(scroll).take(show)
+                {
+                    let row_from_bottom = show - (draw_i - scroll) - 1;
+                    let y_row = y_sep_top - 1 - row_from_bottom as u16;
+                    let label = format!(" /{} — {}", cmd, desc);
                     let padded = pad_to_width(&clamp_text(&label, content_width), content_width);
                     queue!(stdout, MoveTo(x, y_row))?;
                     if draw_i == sel {
