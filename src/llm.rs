@@ -63,6 +63,7 @@ pub struct TaskUpdate {
     pub priority: Option<Priority>,
     pub due_date: Option<NaiveDate>,
     pub dependencies: Vec<String>,
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +86,8 @@ pub enum TriageAction {
     },
     /// AI wants to remember a fact about the user (pending confirmation).
     RememberFact(String),
+    /// AI responded with text only (no tool call).
+    Chat(String),
 }
 
 #[derive(Debug, Clone)]
@@ -581,14 +584,20 @@ fn call_llm(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String>
     }
 }
 
-/// Send a prompt with tool definitions and return the first tool call.
-/// Returns (tool_name, parsed_arguments) on success.
+/// Result of an LLM call with tools: either a tool call or text-only response.
+enum ToolCallResult {
+    Call(String, serde_json::Value),
+    TextOnly(String),
+}
+
+/// Send a prompt with tool definitions. Uses `tool_choice: auto` so the model
+/// can reason before acting. Returns a tool call or a text-only response.
 fn call_llm_with_tools(
     cfg: &LlmConfig,
     system: &str,
     user: &str,
     tools: &serde_json::Value,
-) -> Result<(String, serde_json::Value), String> {
+) -> Result<ToolCallResult, String> {
     let body = match cfg.provider {
         Provider::OpenAi => json!({
             "model": cfg.model,
@@ -597,7 +606,7 @@ fn call_llm_with_tools(
                 {"role": "user", "content": user}
             ],
             "tools": tools,
-            "tool_choice": "required"
+            "tool_choice": "auto"
         }),
         Provider::Anthropic => json!({
             "model": cfg.model,
@@ -606,47 +615,53 @@ fn call_llm_with_tools(
             "messages": [
                 {"role": "user", "content": user}
             ],
-            "tools": tools,
-            "tool_choice": {"type": "any"}
+            "tools": tools
         }),
     };
-
     let text = with_retry(|attempt| {
         let timeout = scaled_timeout(cfg.timeout, &body, attempt);
         send_llm_request(cfg, &body, timeout)
     })?;
-
     match cfg.provider {
         Provider::OpenAi => {
             let chat: ChatResponse = serde_json::from_str(&text)
                 .map_err(|err| format!("AI JSON parse failed: {err}"))?;
-            let tool_call = chat
+            let choice = chat
                 .choices
                 .first()
-                .and_then(|c| c.message.tool_calls.as_ref())
-                .and_then(|tc| tc.first())
-                .ok_or_else(|| "AI returned no tool call".to_string())?;
-            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                .map_err(|err| format!("AI tool args parse failed: {err}"))?;
-            Ok((tool_call.function.name.clone(), args))
+                .ok_or_else(|| "AI returned no choices".to_string())?;
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                if let Some(tc) = tool_calls.first() {
+                    let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                        .map_err(|err| format!("AI tool args parse failed: {err}"))?;
+                    return Ok(ToolCallResult::Call(tc.function.name.clone(), args));
+                }
+            }
+            let content = choice.message.content.as_deref().unwrap_or("").to_string();
+            Ok(ToolCallResult::TextOnly(content))
         }
         Provider::Anthropic => {
             let resp: AnthropicResponse = serde_json::from_str(&text)
                 .map_err(|err| format!("AI JSON parse failed: {err}"))?;
-            let tool_block = resp
+            if let Some(tool_block) = resp.content.iter().find(|b| b.block_type == "tool_use") {
+                let name = tool_block
+                    .name
+                    .clone()
+                    .ok_or_else(|| "tool_use block missing name".to_string())?;
+                let input = tool_block
+                    .input
+                    .clone()
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                return Ok(ToolCallResult::Call(name, input));
+            }
+            let content: String = resp
                 .content
                 .iter()
-                .find(|b| b.block_type == "tool_use")
-                .ok_or_else(|| "AI returned no tool_use block".to_string())?;
-            let name = tool_block
-                .name
-                .clone()
-                .ok_or_else(|| "tool_use block missing name".to_string())?;
-            let input = tool_block
-                .input
-                .clone()
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-            Ok((name, input))
+                .filter(|b| b.block_type == "text")
+                .filter_map(|b| b.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
+            Ok(ToolCallResult::TextOnly(content))
         }
     }
 }
@@ -1101,6 +1116,7 @@ struct UpdateTaskArgs {
     due_date: Option<String>,
     dependencies: Option<Vec<String>>,
     subtasks: Option<Vec<SubTaskArg>>,
+    parent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1191,7 +1207,7 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
         make_tool_def(
             provider,
             "create_task",
-            "Create a new task. Use ONLY when the user describes genuinely new work that does NOT overlap with any existing task or sub-task. Always check existing tasks first.",
+            "Create a genuinely NEW task. ONLY use after confirming no existing task or sub-task covers the same work. If similar work exists, use update_task instead.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1218,7 +1234,7 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
         make_tool_def(
             provider,
             "update_task",
-            "Update an existing task. PREFER this over create_task when similar work already exists. Use for status changes, field updates, or adding sub-tasks.",
+            "Update an existing task. ALWAYS prefer this over create_task when similar work exists. Use for: status changes, field updates, adding sub-tasks, or moving a task under a new parent (set parent_id).",
             json!({
                 "type": "object",
                 "properties": {
@@ -1238,7 +1254,8 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
                         "type": "array",
                         "items": st.clone(),
                         "description": "Sub-tasks to create under this task"
-                    }
+                    },
+                    "parent_id": {"type": "string", "description": "id_prefix of the new parent task to move this task under, or 'none' to promote to a root task"}
                 },
                 "required": ["target_id"]
             })
@@ -1379,27 +1396,35 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
 
     let today = Local::now().format("%Y-%m-%d").to_string();
     let mut system = format!(
-        "Today is {today}. You are an expert AI project manager. Analyze the user's message and call \
-        the appropriate tool.\n\
-        Rules:\n\
-        - CRITICAL: Before creating ANY task, carefully check ALL existing tasks AND their sub-tasks \
-        (lines starting with ↳). If a task or sub-task with similar meaning already exists, use \
-        update_task instead of create_task. NEVER create a duplicate.\n\
-        - When adding sub-tasks, check the parent's existing sub-tasks first. Do NOT create sub-tasks \
-        that overlap with ones already listed.\n\
-        - Generate clean, actionable titles (do NOT use the user's raw words verbatim).\n\
-        - Infer progress from context (e.g. \"already working on X\" → \"In progress\").\n\
+        "Today is {today}. You are an expert AI project manager.\n\n\
+        WORKFLOW — Follow these steps for EVERY request:\n\
+        1. SCAN: Read through ALL existing tasks and sub-tasks (lines starting with ↳) below. \
+        Note each task's id_prefix, title, bucket, and parent-child relationships.\n\
+        2. IDENTIFY: Find which existing tasks relate to the user's request. \
+        Look for tasks with similar meaning, purpose, or scope — even if worded differently. \
+        Check both parent tasks and their sub-tasks.\n\
+        3. REASON: Decide the correct action:\n\
+        - If the user refers to existing work → update_task (NEVER create a duplicate)\n\
+        - If the user wants to reorganize or move tasks → update_task with parent_id\n\
+        - If the user wants to break down a task → decompose_task\n\
+        - If the user describes genuinely NEW work not covered by ANY existing task → create_task\n\
+        - If the user wants to remove a task → delete_task\n\
+        4. ACT: Call exactly one tool with the correct parameters.\n\n\
+        RULES:\n\
+        - NEVER create a task when one with similar meaning already exists. Use update_task instead.\n\
+        - When the user says 'make X part of Y' or 'move X under Y', use update_task on task X \
+        with parent_id set to Y's id_prefix. Do NOT create new tasks.\n\
+        - When adding sub-tasks, check the parent's existing sub-tasks first. Do NOT create \
+        sub-tasks that overlap with ones already listed.\n\
+        - Generate clean, actionable titles (do NOT copy the user's raw words verbatim).\n\
+        - Infer progress from context (e.g. 'already working on X' → 'In progress').\n\
         - If the user asks to break down, decompose, split, or create sub-tasks, use decompose_task.\n\
-        - When updating a task with multiple items/links that map to sub-tasks, include them in the subtasks array.\n\
-        - NEVER put sub-task breakdowns or numbered lists into the description field. Use the subtasks array.\n\
+        - NEVER put sub-task lists or numbered breakdowns into the description field. Use the subtasks array.\n\
         - Subtasks inherit the parent task's bucket and priority unless specified otherwise.\n\
-        - For delete: just call delete_task with the target_id.\n\
         - When the user mentions a task (by name or reference) and follows with an instruction, \
-        assume the instruction applies to that task or its subtasks — use update_task or \
-        decompose_task targeting that task rather than creating something new.\n\
-        - If the user shares something durable and broadly useful about themselves (name, role, team, \
-        strong preference), call remember_fact. Do NOT remember task-specific details."
-    );
+        assume it applies to THAT task — use update_task or decompose_task, not create_task.\n\
+        - If the user shares something durable about themselves (name, role, team, preference), \
+        call remember_fact. Do NOT remember task-specific details."    );
     if !job.user_profile.is_empty() {
         system.push_str(&format!("\n\nUser profile: {}", job.user_profile));
     }
@@ -1436,9 +1461,27 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
 
     let tools = triage_tool_defs(cfg.provider, &job.bucket_names);
 
-    let (tool_name, args) = match call_llm_with_tools(cfg, &system, &user_prompt, &tools) {
+    let tool_result = match call_llm_with_tools(cfg, &system, &user_prompt, &tools) {
         Ok(result) => result,
         Err(err) => return err_result(err),
+    };
+
+    let (tool_name, args) = match tool_result {
+        ToolCallResult::Call(name, args) => (name, args),
+        ToolCallResult::TextOnly(text) => {
+            let reply = if text.trim().is_empty() {
+                "No action taken.".to_string()
+            } else {
+                text
+            };
+            return AiResult {
+                task_id: job.task_id,
+                update: TaskUpdate::default(),
+                error: None,
+                triage_action: Some(TriageAction::Chat(reply)),
+                sub_task_specs: Vec::new(),
+            };
+        }
     };
 
     let allowed: HashSet<String> = job.context.iter().map(|t| short_id(t.id)).collect();
@@ -1475,6 +1518,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .as_deref()
                         .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
                     dependencies: resolve_deps(parsed.dependencies, &allowed),
+                    parent_id: None,
                 },
                 error: None,
                 triage_action: Some(TriageAction::Create),
@@ -1488,16 +1532,21 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
             };
             let target = parsed.target_id.trim().to_string();
             let sub_task_specs = parse_subtask_args(parsed.subtasks, &job.bucket_names);
-            let triage_action = if target.is_empty() {
-                Some(TriageAction::Create)
-            } else {
-                Some(TriageAction::Update(target))
-            };
-            let is_edit = matches!(&triage_action, Some(TriageAction::Update(_)));
+            if target.is_empty() {
+                return err_result(
+                    "update_task called without target_id — specify which task to update"
+                        .to_string(),
+                );
+            }
+            let parent_id = parsed
+                .parent_id
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             AiResult {
                 task_id: job.task_id,
                 update: TaskUpdate {
-                    is_edit,
+                    is_edit: false,
                     title: parsed
                         .title
                         .as_deref()
@@ -1527,9 +1576,10 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .as_deref()
                         .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
                     dependencies: resolve_deps(parsed.dependencies, &allowed),
+                    parent_id,
                 },
                 error: None,
-                triage_action,
+                triage_action: Some(TriageAction::Update(target)),
                 sub_task_specs,
             }
         }

@@ -259,6 +259,7 @@ struct App {
     input_mode: InputMode,
     checklist_selected: usize,
     checklist_expanded: std::collections::HashSet<Uuid>,
+    checklist_frozen_order: Option<Vec<(usize, bool)>>,
 
     chat_history: Vec<llm::ChatEntry>,
     last_triage_input: String,
@@ -494,6 +495,7 @@ fn main() -> io::Result<()> {
         input_mode: InputMode::Chat,
         checklist_selected: 0,
         checklist_expanded: std::collections::HashSet::new(),
+        checklist_frozen_order: None,
         chat_history: Vec::new(),
         last_triage_input: String::new(),
         input_history: Vec::new(),
@@ -715,6 +717,22 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return Ok(false);
     } else if key.code != KeyCode::Esc {
         app.esc_count = 0;
+    }
+
+    // Ctrl+Z: undo last operation.
+    if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(storage) = &app.storage {
+            if let Ok(label) = storage.undo() {
+                if let Ok(fresh) = storage.reload_tasks() {
+                    app.tasks = fresh;
+                }
+                app.checklist_frozen_order = None;
+                app.status = Some((format!("Undid \"{}\"", label), Instant::now(), false));
+            } else {
+                app.status = Some(("Nothing to undo".to_string(), Instant::now(), false));
+            }
+        }
+        return Ok(false);
     }
 
     // Toast dismissal intercepts all keys (skip for persistent toasts).
@@ -3438,6 +3456,38 @@ fn poll_ai(app: &mut App) -> bool {
                             apply_update(task, &result.update, &deps, now);
                             changed = true;
                         }
+                        if let Some(ref new_parent_prefix) = result.update.parent_id {
+                            let old_parent = app
+                                .tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .and_then(|t| t.parent_id);
+                            if new_parent_prefix.eq_ignore_ascii_case("none") {
+                                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                                    task.parent_id = None;
+                                    changed = true;
+                                }
+                            } else {
+                                let new_parent_id = app.tasks.iter().find_map(|t| {
+                                    let short =
+                                        t.id.to_string().chars().take(8).collect::<String>();
+                                    if short.eq_ignore_ascii_case(new_parent_prefix) {
+                                        Some(t.id)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if let Some(pid) = new_parent_id {
+                                    if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                                        task.parent_id = Some(pid);
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            if let Some(old_pid) = old_parent {
+                                sync_parent_progress(&mut app.tasks, old_pid, Utc::now());
+                            }
+                        }
                         sync_parent_progress(&mut app.tasks, id, Utc::now());
                         // Create sub-tasks if the update response includes them.
                         if !result.sub_task_specs.is_empty() {
@@ -3691,6 +3741,9 @@ fn poll_ai(app: &mut App) -> bool {
                 }
                 llm::TriageAction::RememberFact(fact) => {
                     app.pending_memory = Some(fact.clone());
+                }
+                llm::TriageAction::Chat(text) => {
+                    app.status = Some((text.clone(), Instant::now(), true));
                 }
             }
             // Update chat history after triage.
@@ -4160,7 +4213,11 @@ fn get_active_task_id(app: &App) -> Option<Uuid> {
         }
         Tab::Kanban => app.kanban_selected,
         Tab::Checklist => {
-            let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
+            let ordered = app
+                .checklist_frozen_order
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| checklist_task_order(&app.tasks, &app.checklist_expanded));
             ordered
                 .get(app.checklist_selected)
                 .map(|&(idx, _)| app.tasks[idx].id)
@@ -4719,7 +4776,11 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         SetAttribute(Attribute::Reset)
     )?;
 
-    let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
+    let ordered = app
+        .checklist_frozen_order
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| checklist_task_order(&app.tasks, &app.checklist_expanded));
     let list_start_y = 5u16;
     let list_height = rows.saturating_sub(list_start_y + 4) as usize;
     let sel = app.checklist_selected.min(ordered.len().saturating_sub(1));
@@ -4831,31 +4892,40 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
     Ok(())
 }
 fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
-    let ordered = checklist_task_order(&app.tasks, &app.checklist_expanded);
-    let count = ordered.len();
+    let ordered = app
+        .checklist_frozen_order
+        .clone()
+        .unwrap_or_else(|| checklist_task_order(&app.tasks, &app.checklist_expanded));
+    let _count = ordered.len();
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if count > 0 {
-                app.checklist_selected = (app.checklist_selected + 1).min(count - 1);
+            app.checklist_frozen_order = None;
+            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+            if !fresh.is_empty() {
+                app.checklist_selected = (app.checklist_selected + 1).min(fresh.len() - 1);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            app.checklist_frozen_order = None;
             app.checklist_selected = app.checklist_selected.saturating_sub(1);
         }
         KeyCode::Enter => {
             if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
                 let now = Utc::now();
-                let task = &mut app.tasks[task_idx];
-                if task.progress == Progress::Done {
-                    task.set_progress(Progress::Todo, now);
-                } else {
-                    task.set_progress(Progress::Done, now);
-                }
+                let next = match app.tasks[task_idx].progress {
+                    Progress::Done => Progress::Todo,
+                    Progress::InProgress => Progress::Done,
+                    _ => Progress::InProgress,
+                };
+                app.tasks[task_idx].set_progress(next, now);
                 let task_id = app.tasks[task_idx].id;
                 let has_parent = app.tasks[task_idx].parent_id.is_some();
                 if has_parent {
                     sync_parent_progress(&mut app.tasks, task_id, Utc::now());
+                }
+                if app.checklist_frozen_order.is_none() {
+                    app.checklist_frozen_order = Some(ordered);
                 }
                 persist(app);
             }
@@ -4874,28 +4944,37 @@ fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
             }
+            app.checklist_frozen_order = None;
         }
         KeyCode::Char('e') => {
-            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
+            app.checklist_frozen_order = None;
+            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+            if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
                 let task_id = app.tasks[task_idx].id;
                 app.selected_task_id = Some(task_id);
                 open_edit_for(app, task_id);
             }
         }
         KeyCode::Char('d') | KeyCode::Delete => {
-            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
+            app.checklist_frozen_order = None;
+            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+            if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
                 let id = app.tasks[task_idx].id;
                 app.selected_task_id = Some(id);
                 app.confirm_delete_id = Some(id);
             }
         }
         KeyCode::Char('i') => {
+            app.checklist_frozen_order = None;
             app.focus = Focus::Input;
         }
         KeyCode::Esc => {
+            app.checklist_frozen_order = None;
             app.focus = Focus::Tabs;
         }
-        _ => {}
+        _ => {
+            app.checklist_frozen_order = None;
+        }
     }
     Ok(false)
 }
@@ -7386,6 +7465,42 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                             println!("  ~ Updated \"{}\"", task.title);
                             total_changes += 1;
                         }
+                        if let Some(ref new_parent_prefix) = result.update.parent_id {
+                            let old_parent =
+                                tasks.iter().find(|t| t.id == id).and_then(|t| t.parent_id);
+                            if new_parent_prefix.eq_ignore_ascii_case("none") {
+                                if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                                    task.parent_id = None;
+                                    println!("    Promoted to root task");
+                                }
+                            } else {
+                                let new_parent_id = tasks.iter().find_map(|t| {
+                                    let short =
+                                        t.id.to_string().chars().take(8).collect::<String>();
+                                    if short.eq_ignore_ascii_case(new_parent_prefix) {
+                                        Some(t.id)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if let Some(pid) = new_parent_id {
+                                    let parent_title = tasks
+                                        .iter()
+                                        .find(|t| t.id == pid)
+                                        .map(|t| t.title.clone())
+                                        .unwrap_or_default();
+                                    if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                                        task.parent_id = Some(pid);
+                                        println!("    Moved under \"{parent_title}\"");
+                                    }
+                                }
+                            }
+                            if let Some(old_pid) = old_parent {
+                                sync_parent_progress(&mut tasks, old_pid, Utc::now());
+                            }
+                            sync_parent_progress(&mut tasks, id, Utc::now());
+                            total_changes += 1;
+                        }
                         // Create sub-tasks if the update response includes them.
                         if !result.sub_task_specs.is_empty() {
                             let now = Utc::now();
@@ -7603,6 +7718,9 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                     }
                     println!("  - Remembered: \"{fact}\"");
                     total_changes += 1;
+                }
+                llm::TriageAction::Chat(text) => {
+                    println!("  AI: {text}");
                 }
             }
         } else {
