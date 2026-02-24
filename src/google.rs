@@ -36,7 +36,7 @@ impl GoogleToken {
 
 #[derive(Debug, Clone)]
 pub struct CalendarEvent {
-    pub id: String,
+    pub _id: String,
     pub title: String,
     pub start_date: String,
     pub end_date: String,
@@ -291,7 +291,7 @@ pub fn get_upcoming_events(token: &str, days: u32) -> Result<Vec<CalendarEvent>,
             let end = &item["end"];
             let all_day = start["date"].is_string();
             CalendarEvent {
-                id: item["id"].as_str().unwrap_or("").to_string(),
+                _id: item["id"].as_str().unwrap_or("").to_string(),
                 title: item["summary"].as_str().unwrap_or("(No title)").to_string(),
                 start_date: start["dateTime"]
                     .as_str()

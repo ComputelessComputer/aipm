@@ -9,7 +9,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Utc};
+use chrono::{Datelike, Local, Utc};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
@@ -877,7 +877,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             let bp = char_byte_pos(&app.input, app.input_cursor);
             app.input.insert_str(bp, &tag);
             app.input_cursor += tag.chars().count();
-            app.tab = Tab::Default;
+            app.input_mode = InputMode::Chat;
             app.focus = Focus::Input;
             return Ok(false);
         }
@@ -4728,10 +4728,14 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
     let y_help = rows.saturating_sub(1);
 
     let sep = "─".repeat(content_width);
+    let mode_color = match app.input_mode {
+        InputMode::Chat => Color::DarkGrey,
+        InputMode::Add => Color::Green,
+    };
     queue!(
         stdout,
         MoveTo(x, y_sep_top),
-        SetForegroundColor(Color::DarkGrey),
+        SetForegroundColor(mode_color),
         Print(&sep),
         ResetColor
     )?;
@@ -4749,12 +4753,15 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
 
     queue!(stdout, MoveTo(x, y_input))?;
     match app.focus {
-        Focus::Input => queue!(stdout, ResetColor)?,
+        Focus::Input => queue!(stdout, SetForegroundColor(mode_color))?,
         Focus::Tabs | Focus::Board | Focus::Edit => {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?
         }
     };
     queue!(stdout, Print(prompt))?;
+    if app.focus == Focus::Input {
+        queue!(stdout, ResetColor)?;
+    }
 
     if shown.is_empty() {
         let placeholder = match app.input_mode {
@@ -4774,7 +4781,7 @@ fn render_input_bar(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io:
     queue!(
         stdout,
         MoveTo(x, y_sep_bottom),
-        SetForegroundColor(Color::DarkGrey),
+        SetForegroundColor(mode_color),
         Print(&sep),
         ResetColor
     )?;
@@ -5094,7 +5101,15 @@ fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 if y_cur >= y_start + available_rows as u16 {
                     break;
                 }
-                let entry = format!("{} • {} [{}]", evt.start_date, evt.title, evt.calendar_name);
+                let time_str = if evt.all_day {
+                    "All day".to_string()
+                } else {
+                    format!("{} \u{2013} {}", evt.start_date, evt.end_date)
+                };
+                let entry = format!(
+                    "{} \u{2022} {} [{}]",
+                    time_str, evt.title, evt.calendar_name
+                );
                 queue!(
                     stdout,
                     MoveTo(events_x, y_cur),
@@ -5103,6 +5118,31 @@ fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                     ResetColor
                 )?;
                 y_cur += 1;
+                if let Some(loc) = &evt.location {
+                    if !loc.is_empty() && y_cur < y_start + available_rows as u16 {
+                        queue!(
+                            stdout,
+                            MoveTo(events_x, y_cur),
+                            SetForegroundColor(Color::DarkGrey),
+                            Print(clamp_text(&format!("  @ {}", loc), events_width)),
+                            ResetColor
+                        )?;
+                        y_cur += 1;
+                    }
+                }
+                if let Some(notes) = &evt.notes {
+                    if !notes.is_empty() && y_cur < y_start + available_rows as u16 {
+                        let note_line = format!("  {}", notes.lines().next().unwrap_or_default());
+                        queue!(
+                            stdout,
+                            MoveTo(events_x, y_cur),
+                            SetForegroundColor(Color::DarkGrey),
+                            Print(clamp_text(&note_line, events_width)),
+                            ResetColor
+                        )?;
+                        y_cur += 1;
+                    }
+                }
             }
             y_cur += 1;
         } else if app.calendar_loading {
@@ -5224,6 +5264,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
 
     let due_col_w = 12usize;
     let bucket_col_w = 14usize;
+    let pri_col_w = 5usize;
 
     for (draw_i, &(task_idx, is_child)) in ordered.iter().enumerate().skip(scroll).take(list_height)
     {
@@ -5254,11 +5295,26 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             .unwrap_or_else(|| "—".to_string());
         let due_display = clamp_text(&due_str, due_col_w);
         let bucket_display = clamp_text(&task.bucket, bucket_col_w);
+        let pri_str = match task.priority {
+            Priority::Low => "Low",
+            Priority::Medium => "Med",
+            Priority::High => "High",
+            Priority::Critical => "Crit",
+        };
+        let pri_display = clamp_text(pri_str, pri_col_w);
 
         let short_id = task.id.to_string().chars().take(8).collect::<String>();
         let id_col_w = 9;
-        let fixed_cols =
-            expand_icon.width() + checkbox.len() + 1 + id_col_w + 2 + due_col_w + 2 + bucket_col_w;
+        let fixed_cols = expand_icon.width()
+            + checkbox.len()
+            + 1
+            + id_col_w
+            + 2
+            + due_col_w
+            + 2
+            + bucket_col_w
+            + 2
+            + pri_col_w;
         let title_max = content_width.saturating_sub(fixed_cols + 1);
         let title = clamp_text(&task.title, title_max);
         let title_pad = title_max.saturating_sub(title.width());
@@ -5267,7 +5323,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         queue!(stdout, MoveTo(x, y))?;
         if is_sel && app.focus == Focus::Board {
             let line = format!(
-                "{}{} {} {}{}{}{}{}{}",
+                "{}{} {} {}{}{}{}{}{}{}{}",
                 expand_icon,
                 checkbox,
                 short_id,
@@ -5277,6 +5333,8 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
                 due_display,
                 " ".repeat(due_pad.saturating_sub(0) + 2),
                 bucket_display,
+                "  ",
+                pri_display,
             );
             queue!(
                 stdout,
@@ -5291,19 +5349,6 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         } else {
             let prefix = format!("{}{} ", expand_icon, checkbox);
             let id_str = format!("{} ", short_id);
-            let rest = format!(
-                "{}{}{}{}{}{}",
-                title,
-                " ".repeat(title_pad),
-                "  ",
-                due_display,
-                " ".repeat(due_pad.saturating_sub(0) + 2),
-                bucket_display,
-            );
-            let rest_padded = pad_to_width(
-                &rest,
-                content_width.saturating_sub(prefix.width() + id_str.width()),
-            );
             let status_color = if task.progress == Progress::Done {
                 Color::DarkGrey
             } else {
@@ -5315,6 +5360,25 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
                     Progress::Done => Color::Green,
                 }
             };
+            let rest_text = format!(
+                "{}{}{}{}{}{}",
+                title,
+                " ".repeat(title_pad),
+                "  ",
+                due_display,
+                " ".repeat(due_pad.saturating_sub(0) + 2),
+                bucket_display,
+            );
+            let pri_color = match task.priority {
+                Priority::Critical => Color::Red,
+                Priority::High => Color::Yellow,
+                Priority::Medium => Color::White,
+                Priority::Low => Color::DarkGrey,
+            };
+            let rest_padded = pad_to_width(
+                &rest_text,
+                content_width.saturating_sub(prefix.width() + id_str.width() + 2 + pri_col_w),
+            );
             queue!(
                 stdout,
                 SetForegroundColor(status_color),
@@ -5323,6 +5387,8 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
                 Print(&id_str),
                 SetForegroundColor(status_color),
                 Print(&rest_padded),
+                SetForegroundColor(pri_color),
+                Print(format!("  {}", pri_display)),
                 ResetColor
             )?;
         }
@@ -5795,7 +5861,7 @@ fn render_bucket_column(
 }
 
 fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
-    use chrono::{Datelike, Duration as ChronoDuration, Local};
+    use chrono::Duration as ChronoDuration;
 
     let width = cols as usize;
     let (x_margin, _gap) = choose_layout(width, 1);
@@ -6181,7 +6247,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
     let (x_margin, gap) = choose_layout(width, 4);
     let x = x_margin as u16;
     let y_help = rows.saturating_sub(5);
-    let today = Utc::now().date_naive();
+    let today = Local::now().date_naive();
 
     queue!(
         stdout,
@@ -6299,12 +6365,18 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
 
             // Due date string.
             let due_str: Option<String> = task.due_date.map(|d| {
+                let show_year = d.year() != today.year();
+                let date_fmt = if show_year {
+                    d.format("%b %d %Y").to_string()
+                } else {
+                    d.format("%b %d").to_string()
+                };
                 if d < today {
-                    format!("⚠ {}", d.format("%b %d"))
+                    format!("⚠ {}", date_fmt)
                 } else if d == today {
                     "due today".to_string()
                 } else {
-                    d.format("%b %d").to_string()
+                    date_fmt
                 }
             });
 
