@@ -4832,8 +4832,10 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         let due_display = clamp_text(&due_str, due_col_w);
         let bucket_display = clamp_text(&task.bucket, bucket_col_w);
 
+        let short_id = task.id.to_string().chars().take(8).collect::<String>();
+        let id_col_w = 9;
         let fixed_cols =
-            expand_icon.width() + checkbox.len() + 1 + 2 + due_col_w + 2 + bucket_col_w;
+            expand_icon.width() + checkbox.len() + 1 + id_col_w + 2 + due_col_w + 2 + bucket_col_w;
         let title_max = content_width.saturating_sub(fixed_cols + 1);
         let title = clamp_text(&task.title, title_max);
         let title_pad = title_max.saturating_sub(title.width());
@@ -4841,42 +4843,66 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         let _bucket_pad = bucket_col_w.saturating_sub(bucket_display.width());
         queue!(stdout, MoveTo(x, y))?;
         if is_sel && app.focus == Focus::Board {
+            let line = format!(
+                "{}{} {} {}{}{}{}{}{}",
+                expand_icon,
+                checkbox,
+                short_id,
+                title,
+                " ".repeat(title_pad),
+                "  ",
+                due_display,
+                " ".repeat(due_pad.saturating_sub(0) + 2),
+                bucket_display,
+            );
             queue!(
                 stdout,
                 SetForegroundColor(Color::Black),
-                SetBackgroundColor(Color::White)
+                SetBackgroundColor(Color::White),
+                Print(pad_to_width(
+                    &clamp_text(&line, content_width),
+                    content_width
+                )),
+                ResetColor
             )?;
-        } else if task.progress == Progress::Done {
-            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         } else {
-            let status_color = match task.progress {
-                Progress::InProgress => Color::Yellow,
-                Progress::Todo => Color::Blue,
-                Progress::Backlog => Color::DarkGrey,
-                Progress::Archived => Color::DarkGrey,
-                Progress::Done => Color::Green,
+            let prefix = format!("{}{} ", expand_icon, checkbox);
+            let id_str = format!("{} ", short_id);
+            let rest = format!(
+                "{}{}{}{}{}{}",
+                title,
+                " ".repeat(title_pad),
+                "  ",
+                due_display,
+                " ".repeat(due_pad.saturating_sub(0) + 2),
+                bucket_display,
+            );
+            let rest_padded = pad_to_width(
+                &rest,
+                content_width.saturating_sub(prefix.width() + id_str.width()),
+            );
+            let status_color = if task.progress == Progress::Done {
+                Color::DarkGrey
+            } else {
+                match task.progress {
+                    Progress::InProgress => Color::Yellow,
+                    Progress::Todo => Color::Blue,
+                    Progress::Backlog => Color::DarkGrey,
+                    Progress::Archived => Color::DarkGrey,
+                    Progress::Done => Color::Green,
+                }
             };
-            queue!(stdout, SetForegroundColor(status_color))?;
+            queue!(
+                stdout,
+                SetForegroundColor(status_color),
+                Print(&prefix),
+                SetForegroundColor(Color::DarkGrey),
+                Print(&id_str),
+                SetForegroundColor(status_color),
+                Print(&rest_padded),
+                ResetColor
+            )?;
         }
-        let line = format!(
-            "{}{} {}{}{}{}{}{}",
-            expand_icon,
-            checkbox,
-            title,
-            " ".repeat(title_pad),
-            "  ",
-            due_display,
-            " ".repeat(due_pad.saturating_sub(0) + 2),
-            bucket_display,
-        );
-        queue!(
-            stdout,
-            Print(pad_to_width(
-                &clamp_text(&line, content_width),
-                content_width
-            )),
-            ResetColor
-        )?;
     }
     // help line
     queue!(
