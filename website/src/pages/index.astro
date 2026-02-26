@@ -2,7 +2,7 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 
 const title = "aipm";
-const description = "AI-powered project management for the terminal";
+const description = "Claude Code is for coding. This is for PM-ing.";
 
 const features = [
   {
@@ -44,11 +44,24 @@ const features = [
   <!-- Hero -->
   <section class="hero">
     <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
-    <p class="hero-tagline">{description}</p>
-    <pre class="install-cmd"><code>brew tap ComputelessComputer/aipm && brew install aipm</code></pre>
-    <a href="https://github.com/ComputelessComputer/aipm" class="cta-btn" target="_blank" rel="noopener noreferrer">
-      view on github →
-    </a>
+    <p class="hero-tagline">Claude Code is for coding.<br/>This is for PM-ing.</p>
+    <pre class="install-cmd" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm')" title="Click to copy"><code>brew tap ComputelessComputer/aipm && brew install aipm</code><span class="copy-hint">click to copy</span></pre>
+  </section>
+
+  <!-- Value Props -->
+  <section class="value-props">
+    <div class="prop">
+      <h3>local-first</h3>
+      <p>Your tasks live as plain files on your filesystem. No servers, no sync, no lock-in. Grep, sed, or script your way through everything.</p>
+    </div>
+    <div class="prop">
+      <h3>cli-first</h3>
+      <p>Headless commands with JSON output. Built for scripting and AI coding agents. Works as well in a pipeline as it does interactively.</p>
+    </div>
+    <div class="prop">
+      <h3>super fast</h3>
+      <p>Native Rust TUI. Instant startup, zero latency navigation, no Electron, no browser. Just your terminal.</p>
+    </div>
   </section>
 
   <!-- Demo -->
@@ -78,23 +91,6 @@ const features = [
     </div>
   </section>
 
-  <!-- Install -->
-  <section class="install">
-    <h2>install</h2>
-    <div class="install-methods">
-      <div class="install-method">
-        <h3>homebrew (macos/linux)</h3>
-        <pre><code>brew tap ComputelessComputer/aipm
-brew install aipm</code></pre>
-      </div>
-      <div class="install-method">
-        <h3>from source</h3>
-        <pre><code>git clone https://github.com/ComputelessComputer/aipm.git
-cd aipm
-cargo build --release</code></pre>
-      </div>
-    </div>
-  </section>
 </BaseLayout>
 
 <style>
@@ -133,7 +129,60 @@ cargo build --release</code></pre>
   .install-cmd {
     display: inline-block;
     text-align: left;
-    margin-bottom: var(--space-xl);
+    cursor: pointer;
+    position: relative;
+    transition: border-color var(--transition-fast);
+  }
+
+  .install-cmd:hover {
+    border-color: var(--color-accent);
+  }
+
+  .install-cmd:active {
+    border-color: var(--color-accent-dim);
+  }
+
+  .copy-hint {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin-top: var(--space-xs);
+    text-align: right;
+  }
+
+  .install-cmd:hover .copy-hint {
+    color: var(--color-accent);
+  }
+
+  /* Value Props */
+  .value-props {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-lg);
+    padding: var(--space-2xl) 0;
+    border-top: 1px solid var(--color-border);
+  }
+
+  @media (min-width: 640px) {
+    .value-props {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  .prop {
+    padding: var(--space-lg);
+  }
+
+  .prop h3 {
+    font-size: 1.125rem;
+    color: var(--color-accent);
+    margin-bottom: var(--space-sm);
+  }
+
+  .prop p {
+    font-size: 0.9rem;
+    color: var(--color-text-muted);
+    line-height: 1.6;
   }
 
   .cta-btn {
@@ -217,35 +266,4 @@ cargo build --release</code></pre>
     line-height: 1.5;
   }
 
-  /* Install */
-  .install {
-    padding: var(--space-2xl) 0;
-  }
-
-  .install h2 {
-    margin-bottom: var(--space-lg);
-  }
-
-  .install-methods {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: var(--space-lg);
-  }
-
-  @media (min-width: 640px) {
-    .install-methods {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-
-  .install-method h3 {
-    font-size: 0.875rem;
-    color: var(--color-text-muted);
-    margin-bottom: var(--space-sm);
-    text-transform: lowercase;
-  }
-
-  .install-method pre {
-    margin: 0;
-  }
 </style>
