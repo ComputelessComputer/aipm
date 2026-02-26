@@ -860,6 +860,7 @@ struct Enriched {
     priority: Option<String>,
     due_date: Option<String>,
     dependencies: Option<Vec<String>>,
+    parent_id: Option<String>,
     subtasks: Option<Vec<SubTaskEnriched>>,
 }
 
@@ -920,7 +921,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         .join("|");
 
     let user = format!(
-        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- Only include fields that should change. Set unchanged fields to null.\n",
+        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"parent_id\": \"id_prefix\" | \"none\" | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- To move this task under another task as a sub-task, set \"parent_id\" to the target task's id_prefix. To promote to a root task, set \"parent_id\" to \"none\".\n- Only include fields that should change. Set unchanged fields to null.\n",
         snapshot,
         instruction,
         context_lines
@@ -1028,6 +1029,12 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         }
         update.dependencies = out;
     }
+
+    update.parent_id = enriched
+        .parent_id
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let sub_task_specs: Vec<SubTaskSpec> = enriched
         .subtasks

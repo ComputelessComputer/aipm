@@ -339,7 +339,7 @@ fn spawn_email_poller(
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            let emails = match google::get_recent_emails(&token, 10) {
+            let emails: Vec<google::Email> = match google::get_recent_emails(&token, 10) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -3938,6 +3938,45 @@ fn poll_ai(app: &mut App) -> bool {
                 changed = true;
             }
         }
+        if let Some(ref new_parent_prefix) = result.update.parent_id {
+            let task_id = result.task_id;
+            let old_parent = app
+                .tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .and_then(|t| t.parent_id);
+            if new_parent_prefix.eq_ignore_ascii_case("none") {
+                if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.parent_id = None;
+                    changed = true;
+                }
+            } else {
+                let new_parent_id = app.tasks.iter().find_map(|t| {
+                    let short = t.id.to_string().chars().take(8).collect::<String>();
+                    if short.eq_ignore_ascii_case(new_parent_prefix) {
+                        Some(t.id)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(pid) = new_parent_id {
+                    if let Some(task) = app.tasks.iter_mut().find(|t| t.id == task_id) {
+                        task.parent_id = Some(pid);
+                        changed = true;
+                    }
+                }
+            }
+            if let Some(old_pid) = old_parent {
+                sync_parent_progress(&mut app.tasks, old_pid, Utc::now());
+            }
+            if !changed {
+                app.status = Some((
+                    format!("AI: parent task {} not found", new_parent_prefix),
+                    Instant::now(),
+                    false,
+                ));
+            }
+        }
         sync_parent_progress(&mut app.tasks, parent_id, Utc::now());
 
         // Create actual sub-task records when the edit response includes subtasks.
@@ -5169,6 +5208,15 @@ fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
                 MoveTo(events_x, y_cur),
                 SetForegroundColor(Color::DarkGrey),
                 Print(clamp_text("Loading calendar events...", events_width)),
+                ResetColor
+            )?;
+            y_cur += 2;
+        } else if !app.google_connected {
+            queue!(
+                stdout,
+                MoveTo(events_x, y_cur),
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text("Connect Google in Settings (0)", events_width)),
                 ResetColor
             )?;
             y_cur += 2;
