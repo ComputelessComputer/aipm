@@ -46,9 +46,7 @@ const features = [
     <div class="hero-grid">
       <div class="hero-copy">
         <p class="section-kicker"><span class="kicker-dot"></span>vision</p>
-        <h1 class="hero-title">Run every project with execution-grade AI orchestration.</h1>
-        <p class="hero-tagline">From inbox to roadmap to shipped work, every task stays local and every action can be executed through real tools.</p>
-        <p class="hero-desc">Built for operators who care about speed, clarity, and control inside the terminal.</p>
+        <h1 class="hero-title">Run every project with execution-grade AI orchestration, from inbox to roadmap to shipped work with local tasks and real tool execution.</h1>
         <pre
           class="install-cmd"
           onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); if (!prompt) return; prompt.classList.add('copied'); this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.classList.remove('copied'); this.classList.remove('copied'); }, 1200);"
@@ -166,26 +164,11 @@ const features = [
   }
 
   .hero-title {
-    margin-bottom: 1rem;
-    line-height: 0.95;
-    font-size: clamp(2.35rem, 6.2vw, 5.25rem);
-    max-width: 14ch;
-  }
-
-  .hero-tagline {
-    margin-bottom: 1rem;
-    max-width: 53ch;
-    font-size: clamp(1.1rem, 1.9vw, 1.8rem);
-    line-height: 1.22;
-    color: #5c6590;
-  }
-
-  .hero-desc {
-    max-width: 52ch;
     margin-bottom: 1.45rem;
-    font-size: clamp(0.95rem, 1.2vw, 1.15rem);
-    line-height: 1.5;
-    color: #4e5882;
+    line-height: 1.03;
+    font-size: clamp(2.35rem, 6.2vw, 5.25rem);
+    max-width: 20ch;
+    color: #18234d;
   }
 
   .install-cmd {
@@ -398,10 +381,6 @@ const features = [
   }
 
   @media (max-width: 640px) {
-    .hero-tagline {
-      font-size: 1rem;
-    }
-
     .install-cmd {
       display: block;
       width: 100%;
