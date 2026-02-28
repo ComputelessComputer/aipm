@@ -1,15 +1,15 @@
 :root {
-  --color-bg: #ffffff;
-  --color-bg-elevated: #ffffff;
-  --color-bg-code: #f7f9ff;
-  --color-text: #111827;
-  --color-text-muted: #67718e;
-  --color-accent: #635bff;
-  --color-accent-dim: #3f7cff;
-  --color-border: #d7dff1;
-  --color-muted: #8b95b4;
-  --color-secondary: #4d5776;
-  --font-sans: 'Space Grotesk', 'Avenir Next', 'Segoe UI', sans-serif;
+  --color-bg: #faf7f2;
+  --color-bg-elevated: #fffdfb;
+  --color-bg-code: #f3ede4;
+  --color-text: #2c2418;
+  --color-text-muted: #8a7a68;
+  --color-accent: #c07a3e;
+  --color-accent-dim: #a86934;
+  --color-border: #e5dbc8;
+  --color-muted: #9d8c78;
+  --color-secondary: #5e4d3a;
+  --font-sans: 'Bricolage Grotesque', 'Avenir Next', 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
@@ -71,7 +71,7 @@ nav {
   top: 0;
   height: var(--nav-height);
   border-bottom: 1px solid var(--color-border);
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(250, 247, 242, 0.96);
   backdrop-filter: blur(7px);
   z-index: 100;
 }
@@ -103,7 +103,7 @@ nav .logo {
 nav .logo .header-cursor {
   display: inline-block;
   line-height: 1;
-  color: #4f46e5;
+  color: #c07a3e;
   animation: blink 1s step-end infinite;
 }
 
@@ -130,7 +130,7 @@ footer {
   margin-top: auto;
   padding: var(--space-xl) clamp(1.25rem, 3.2vw, 2.9rem);
   border-top: 1px solid var(--color-border);
-  background: #ffffff;
+  background: #faf7f2;
 }
 
 footer .footer-inner {
