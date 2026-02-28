@@ -135,6 +135,7 @@ const features = [
     position: relative;
     padding-bottom: clamp(2.8rem, 5vw, 4.8rem);
     border-bottom: 1px solid var(--color-border);
+    text-align: left;
   }
 
   .hero::before {
@@ -152,10 +153,12 @@ const features = [
     display: grid;
     grid-template-columns: 1fr;
     gap: clamp(1.8rem, 3.5vw, 3.4rem);
+    justify-items: start;
   }
 
   .hero-copy {
     max-width: 800px;
+    justify-self: start;
   }
 
   .hero-title {
@@ -245,6 +248,8 @@ const features = [
     display: grid;
     gap: 1.45rem;
     align-content: center;
+    justify-self: stretch;
+    width: 100%;
   }
 
   .signal-row {
