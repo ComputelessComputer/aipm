@@ -5132,10 +5132,12 @@ fn checklist_task_order(
 
 fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
-    let content_width = width.saturating_sub(2);
-    let x = 1u16;
-    let y_start = 2u16;
-    let available_rows = rows.saturating_sub(7) as usize;
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
+    let x = x_margin as u16;
+    let content_width = width.saturating_sub(x_margin * 2);
+    let y_start = 3u16;
+    let available_rows = rows.saturating_sub(8) as usize;
 
     let today = chrono::Local::now().date_naive();
     let year = today.year();
@@ -6217,7 +6219,8 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
     use chrono::Duration as ChronoDuration;
 
     let width = cols as usize;
-    let (x_margin, _gap) = choose_layout(width, 1);
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _gap) = choose_layout(width, num_buckets);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
 
@@ -6597,7 +6600,9 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
 
 fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -> io::Result<()> {
     let width = cols as usize;
-    let (x_margin, gap) = choose_layout(width, 4);
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
+    let (_, gap) = choose_layout(width, 4);
     let x = x_margin as u16;
     let y_help = rows.saturating_sub(5);
     let today = Local::now().date_naive();
@@ -6845,7 +6850,8 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
 
 fn render_settings_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) -> io::Result<()> {
     let width = cols as usize;
-    let (x_margin, _) = choose_layout(width, 1);
+    let num_buckets = app.settings.buckets.len().max(1);
+    let (x_margin, _) = choose_layout(width, num_buckets);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
 
