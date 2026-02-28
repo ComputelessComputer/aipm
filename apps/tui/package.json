@@ -1,0 +1,11 @@
+{
+  "name": "@aipm/tui",
+  "private": true,
+  "scripts": {
+    "dev": "cargo run --manifest-path Cargo.toml",
+    "build": "cargo build --manifest-path Cargo.toml --release",
+    "check": "cargo check --manifest-path Cargo.toml",
+    "clippy": "cargo clippy --manifest-path Cargo.toml --all-targets -- -D warnings",
+    "test": "cargo test --manifest-path Cargo.toml"
+  }
+}
