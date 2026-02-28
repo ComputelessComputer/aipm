@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import CheckIcon from '../components/CheckIcon';
 
 const title = "aipm";
 const description = "Claude Code is for coding. This is for PM-ing.";
@@ -50,9 +51,9 @@ const features = [
         <p class="hero-desc">The AI project manager built for terminal operators. Tasks stay local as files, and the agent executes work through real tools instead of hand-wavy summaries.</p>
         <pre
           class="install-cmd"
-          onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); prompt.textContent = '✓'; this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.textContent = '$'; this.classList.remove('copied'); }, 1200);"
+          onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); if (!prompt) return; prompt.classList.add('copied'); this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.classList.remove('copied'); this.classList.remove('copied'); }, 1200);"
           title="Click to copy"
-        ><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
+        ><code><span class="terminal-prompt" aria-hidden="true"><span class="prompt-dollar">$</span><span class="prompt-check"><CheckIcon size={16} strokeWidth={2.5} /></span></span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
       </div>
 
       <div class="hero-visual" aria-hidden="true">
@@ -232,10 +233,25 @@ const features = [
   }
 
   .terminal-prompt {
+    display: inline-flex;
+    align-items: center;
     color: #5a54e8;
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
+  }
+
+  .prompt-check {
+    display: none;
+    line-height: 0;
+  }
+
+  .terminal-prompt.copied .prompt-dollar {
+    display: none;
+  }
+
+  .terminal-prompt.copied .prompt-check {
+    display: inline-flex;
   }
 
   .install-cmd.copied .terminal-prompt {
