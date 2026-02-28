@@ -44,7 +44,7 @@ const features = [
   <!-- Hero -->
   <section class="hero">
     <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
-    <p class="hero-tagline">Claude Code is for coding.<br/>This is for PM-ing.</p>
+    <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
     <pre class="install-cmd" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm')" title="Click to copy"><code>brew tap ComputelessComputer/aipm && brew install aipm</code><span class="copy-hint">click to copy</span></pre>
   </section>
 
@@ -121,9 +121,15 @@ const features = [
   }
 
   .hero-tagline {
-    font-size: 1.25rem;
+    font-size: clamp(1rem, 2.5vw, 1.25rem);
     color: var(--color-text-muted);
     margin-bottom: var(--space-xl);
+    white-space: nowrap;
+  }
+
+  .hero-tagline-highlight {
+    color: var(--color-accent);
+    font-weight: 600;
   }
 
   .install-cmd {
