@@ -45,14 +45,7 @@ const features = [
   <section class="hero">
     <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
     <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
-    <pre class="install-cmd" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm')" title="Click to copy">
-      <span class="install-cmd-header">
-        <span class="terminal-dots"><span></span><span></span><span></span></span>
-        <span class="terminal-title">terminal</span>
-      </span>
-      <code><span class="terminal-prompt">$</span> brew tap ComputelessComputer/aipm && brew install aipm</code>
-      <span class="copy-hint">click to copy</span>
-    </pre>
+    <pre class="install-cmd" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm')" title="Click to copy"><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
   </section>
 
   <!-- Value Props -->
@@ -145,106 +138,51 @@ const features = [
     margin: 0 auto;
     text-align: left;
     cursor: pointer;
-    position: relative;
-    border-radius: 14px;
-    border: 1px solid #2b2f3a;
-    background: linear-gradient(180deg, #0f131d 0%, #090c13 100%);
-    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5);
-    padding: 0;
-    overflow: hidden;
-    transition: border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+    border-radius: 10px;
+    border: 1px solid #1f2229;
+    background: #090b10;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    padding: 1rem 1.1rem;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
 
   .install-cmd:hover {
-    border-color: #3a8cff;
-    transform: translateY(-1px);
-    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.62);
+    border-color: #2f3440;
+    background: #0b0e15;
   }
 
   .install-cmd:active {
-    transform: translateY(0);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
-  }
-
-  .install-cmd-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: 0.55rem 0.9rem;
-    border-bottom: 1px solid #202531;
-    background-color: #0d1119;
-  }
-
-  .terminal-dots {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-
-  .terminal-dots span {
-    width: 0.6rem;
-    height: 0.6rem;
-    border-radius: 999px;
-    display: inline-block;
-  }
-
-  .terminal-dots span:nth-child(1) {
-    background-color: #ff5f57;
-  }
-
-  .terminal-dots span:nth-child(2) {
-    background-color: #febc2e;
-  }
-
-  .terminal-dots span:nth-child(3) {
-    background-color: #28c840;
-  }
-
-  .terminal-title {
-    color: #9aa6be;
-    font-size: 0.75rem;
-    letter-spacing: 0.03em;
-    text-transform: lowercase;
+    background: #090b10;
   }
 
   .install-cmd code {
-    display: block;
+    display: inline-flex;
+    align-items: center;
     background: none;
     border: 0;
-    color: #e2e9f5;
-    font-size: clamp(0.75rem, 2.2vw, 1.05rem);
-    line-height: 1.45;
-    padding: 1rem 1.05rem 0;
+    color: #d8dde8;
+    font-size: clamp(0.9rem, 2.2vw, 1.05rem);
+    line-height: 1.35;
+    padding: 0;
     white-space: nowrap;
   }
 
   .terminal-prompt {
-    color: #5ba0ff;
-    margin-right: 0.5ch;
-  }
-
-  .copy-hint {
-    display: block;
-    font-size: 0.7rem;
-    color: #7f8ba3;
-    margin-top: 0.65rem;
-    padding: 0 1.05rem 1rem;
-    text-align: right;
-    text-transform: lowercase;
-  }
-
-  .install-cmd:hover .copy-hint {
-    color: #b6c8e8;
+    color: #d8dde8;
+    opacity: 0.9;
+    margin-right: 0.6ch;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   @media (max-width: 640px) {
-    .install-cmd code {
-      overflow-x: auto;
-      padding: 0.9rem 0.9rem 0;
+    .install-cmd {
+      padding: 0.85rem 0.9rem;
     }
 
-    .copy-hint {
-      padding: 0 0.9rem 0.9rem;
+    .install-cmd code {
+      overflow-x: auto;
+      display: flex;
     }
   }
 
