@@ -1,14 +1,14 @@
 :root {
-  --color-bg: #0b1026;
-  --color-bg-elevated: #121a3c;
-  --color-bg-code: #0f1735;
-  --color-text: #f3f6ff;
-  --color-text-muted: #a7afd4;
+  --color-bg: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-code: #f7f9ff;
+  --color-text: #111827;
+  --color-text-muted: #67718e;
   --color-accent: #635bff;
   --color-accent-dim: #3f7cff;
-  --color-border: #2a3569;
-  --color-muted: #8f97be;
-  --color-secondary: #c9d0ef;
+  --color-border: #d7dff1;
+  --color-muted: #8b95b4;
+  --color-secondary: #4d5776;
   --font-sans: 'Space Grotesk', 'Avenir Next', 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
   --space-xs: 0.25rem;
@@ -39,12 +39,7 @@ body {
   font-size: 16px;
   line-height: 1.6;
   color: var(--color-text);
-  background-color: var(--color-bg);
-  background-image:
-    radial-gradient(circle at 92% -8%, rgba(255, 136, 0, 0.35), transparent 34%),
-    radial-gradient(circle at 86% 14%, rgba(206, 91, 255, 0.28), transparent 38%),
-    radial-gradient(circle at 64% 0%, rgba(101, 117, 255, 0.3), transparent 42%),
-    linear-gradient(180deg, #0b1026 0%, #090f21 100%);
+  background: var(--color-bg);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -75,8 +70,8 @@ nav {
   position: sticky;
   top: 0;
   height: var(--nav-height);
-  border-bottom: 1px solid rgba(103, 121, 208, 0.35);
-  background: rgba(11, 16, 38, 0.78);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(7px);
   z-index: 100;
 }
@@ -96,7 +91,7 @@ nav .logo {
   font-family: var(--font-mono);
   font-size: 1.7rem;
   font-weight: 600;
-  color: #e8ebff;
+  color: var(--color-text);
   letter-spacing: -0.02em;
   text-transform: lowercase;
 }
@@ -111,20 +106,20 @@ nav .nav-links {
 nav .nav-links a {
   font-family: var(--font-mono);
   font-size: 0.76rem;
-  color: #b3bcdf;
+  color: var(--color-text-muted);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 nav .nav-links a:hover {
-  color: #ffffff;
+  color: var(--color-text);
 }
 
 footer {
   margin-top: auto;
   padding: var(--space-xl) clamp(1.25rem, 3.2vw, 2.9rem);
-  border-top: 1px solid rgba(103, 121, 208, 0.35);
-  background: rgba(11, 16, 38, 0.76);
+  border-top: 1px solid var(--color-border);
+  background: #ffffff;
 }
 
 footer .footer-inner {
