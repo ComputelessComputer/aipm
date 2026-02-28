@@ -9,7 +9,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Local, Utc};
+use chrono::{Datelike, Local, Timelike, Utc};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
@@ -5161,230 +5161,280 @@ fn render_calendar_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> 
     let (x_margin, _) = choose_layout(width, num_buckets);
     let x = x_margin as u16;
     let content_width = width.saturating_sub(x_margin * 2);
-    let y_start = 3u16;
-    let available_rows = rows.saturating_sub(8) as usize;
+    let y_top = 3u16;
+    let y_help = rows.saturating_sub(5);
+    let body_bottom = y_help.saturating_sub(1);
 
-    let today = chrono::Local::now().date_naive();
+    let today = Local::now().date_naive();
     let year = today.year();
     let month = today.month();
+    let first_of_month = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(today);
+    let month_label = first_of_month.format("%B %Y").to_string();
 
-    queue!(
-        stdout,
-        MoveTo(x, y_start),
-        SetAttribute(Attribute::Bold),
-        Print(format!("{}", today.format("%B %Y"))),
-        SetAttribute(Attribute::Reset)
-    )?;
-
-    let weekdays = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-    let cell_w = 4usize;
-    let cal_width = cell_w * 7;
-    let cal_x = x;
-
-    queue!(
-        stdout,
-        MoveTo(cal_x, y_start + 1),
-        SetForegroundColor(Color::DarkGrey)
-    )?;
-    for wd in &weekdays {
-        queue!(stdout, Print(format!("{:>width$}", wd, width = cell_w)))?;
-    }
-    queue!(stdout, ResetColor)?;
-
-    let first_of_month = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
-    let days_in_month = if month == 12 {
-        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    let status_text = if app.calendar_loading {
+        "syncing Google…"
+    } else if app.google_connected {
+        "Google connected"
     } else {
-        chrono::NaiveDate::from_ymd_opt(year, month + 1, 1)
-    }
-    .unwrap()
-    .signed_duration_since(first_of_month)
-    .num_days() as u32;
-    let start_weekday = first_of_month.weekday().num_days_from_monday() as usize;
-
-    let mut row = 0usize;
-    let mut col = start_weekday;
-    for day in 1..=days_in_month {
-        let date = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
-        let y_row = y_start + 2 + row as u16;
-        if y_row >= y_start + available_rows as u16 {
-            break;
-        }
-        queue!(stdout, MoveTo(cal_x + (col * cell_w) as u16, y_row))?;
-        let has_task = app.tasks.iter().any(|t| t.due_date == Some(date));
-        if date == today {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Black),
-                SetBackgroundColor(Color::White),
-                Print(format!("{:>width$}", day, width = cell_w)),
-                ResetColor
-            )?;
-        } else if has_task {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Cyan),
-                Print(format!("{:>width$}", day, width = cell_w)),
-                ResetColor
-            )?;
-        } else {
-            queue!(stdout, Print(format!("{:>width$}", day, width = cell_w)))?;
-        }
-        col += 1;
-        if col >= 7 {
-            col = 0;
-            row += 1;
-        }
-    }
-
-    let events_x = (cal_width + 4) as u16 + cal_x;
-    let events_width = content_width.saturating_sub(cal_width + 4);
-    if events_width > 10 {
-        let mut y_cur = y_start;
-
-        if !app.calendar_events.is_empty() {
-            queue!(
-                stdout,
-                MoveTo(events_x, y_cur),
-                SetAttribute(Attribute::Bold),
-                Print(clamp_text("Upcoming events", events_width)),
-                SetAttribute(Attribute::Reset)
-            )?;
-            y_cur += 1;
-            for evt in &app.calendar_events {
-                if y_cur >= y_start + available_rows as u16 {
-                    break;
-                }
-                let time_str = if evt.all_day {
-                    "All day".to_string()
-                } else {
-                    format!("{} \u{2013} {}", evt.start_date, evt.end_date)
-                };
-                let entry = format!(
-                    "{} \u{2022} {} [{}]",
-                    time_str, evt.title, evt.calendar_name
-                );
-                queue!(
-                    stdout,
-                    MoveTo(events_x, y_cur),
-                    SetForegroundColor(Color::Magenta),
-                    Print(clamp_text(&entry, events_width)),
-                    ResetColor
-                )?;
-                y_cur += 1;
-                if let Some(loc) = &evt.location {
-                    if !loc.is_empty() && y_cur < y_start + available_rows as u16 {
-                        queue!(
-                            stdout,
-                            MoveTo(events_x, y_cur),
-                            SetForegroundColor(Color::DarkGrey),
-                            Print(clamp_text(&format!("  @ {}", loc), events_width)),
-                            ResetColor
-                        )?;
-                        y_cur += 1;
-                    }
-                }
-                if let Some(notes) = &evt.notes {
-                    if !notes.is_empty() && y_cur < y_start + available_rows as u16 {
-                        let note_line = format!("  {}", notes.lines().next().unwrap_or_default());
-                        queue!(
-                            stdout,
-                            MoveTo(events_x, y_cur),
-                            SetForegroundColor(Color::DarkGrey),
-                            Print(clamp_text(&note_line, events_width)),
-                            ResetColor
-                        )?;
-                        y_cur += 1;
-                    }
-                }
-            }
-            y_cur += 1;
-        } else if app.calendar_loading {
-            queue!(
-                stdout,
-                MoveTo(events_x, y_cur),
-                SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text("Loading calendar events...", events_width)),
-                ResetColor
-            )?;
-            y_cur += 2;
-        } else if !app.google_connected {
-            queue!(
-                stdout,
-                MoveTo(events_x, y_cur),
-                SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text("Connect Google in Settings (0)", events_width)),
-                ResetColor
-            )?;
-            y_cur += 2;
-        }
-
-        queue!(
-            stdout,
-            MoveTo(events_x, y_cur),
-            SetAttribute(Attribute::Bold),
-            Print(clamp_text("Tasks with due dates", events_width)),
-            SetAttribute(Attribute::Reset)
-        )?;
-        y_cur += 1;
-        let mut tasks_with_dates: Vec<&model::Task> =
-            app.tasks.iter().filter(|t| t.due_date.is_some()).collect();
-        tasks_with_dates.sort_by_key(|t| t.due_date);
-        if tasks_with_dates.is_empty() {
-            queue!(
-                stdout,
-                MoveTo(events_x, y_cur),
-                SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text("No tasks with due dates", events_width)),
-                ResetColor
-            )?;
-        } else {
-            for task in &tasks_with_dates {
-                if y_cur >= y_start + available_rows as u16 {
-                    break;
-                }
-                let date_str = task
-                    .due_date
-                    .map(|d| d.format("%m/%d").to_string())
-                    .unwrap_or_default();
-                let short_id = task.id.to_string().chars().take(8).collect::<String>();
-                let status_icon = match task.progress {
-                    model::Progress::Done => "\u{2713}",
-                    model::Progress::InProgress => "\u{25d0}",
-                    model::Progress::Todo => "\u{25cb}",
-                    model::Progress::Backlog => "\u{b7}",
-                    model::Progress::Archived => "\u{2298}",
-                };
-                let entry = format!("{} {} {} {}", date_str, status_icon, short_id, task.title);
-                let status_color = match task.progress {
-                    model::Progress::Done => Color::DarkGrey,
-                    model::Progress::InProgress => Color::Yellow,
-                    model::Progress::Todo => Color::Blue,
-                    model::Progress::Backlog => Color::DarkGrey,
-                    model::Progress::Archived => Color::DarkGrey,
-                };
-                queue!(
-                    stdout,
-                    MoveTo(events_x, y_cur),
-                    SetForegroundColor(status_color),
-                    Print(clamp_text(&entry, events_width)),
-                    ResetColor
-                )?;
-                y_cur += 1;
-            }
-        }
-    }
-
+        "Google not connected"
+    };
+    let status_x = x + content_width.saturating_sub(status_text.width()) as u16;
     queue!(
         stdout,
-        MoveTo(x, rows.saturating_sub(5)),
+        MoveTo(x, y_top),
+        SetAttribute(Attribute::Bold),
+        Print(&month_label),
+        SetAttribute(Attribute::Reset),
+        MoveTo(status_x, y_top),
         SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(
-            " Calendar view \u{2022} tasks with due dates highlighted in cyan",
-            content_width,
-        )),
+        Print(status_text),
         ResetColor
     )?;
+
+    let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let grid_top = y_top + 2;
+    if body_bottom <= grid_top {
+        return Ok(());
+    }
+
+    let cell_inner_w = content_width.saturating_sub(6) / 7;
+    if cell_inner_w < 8 {
+        queue!(
+            stdout,
+            MoveTo(x, grid_top),
+            SetForegroundColor(Color::DarkGrey),
+            Print("Calendar view is too narrow for month grid."),
+            ResetColor
+        )?;
+        return Ok(());
+    }
+
+    let grid_width = cell_inner_w * 7 + 6;
+    let grid_x = x + content_width.saturating_sub(grid_width) as u16 / 2;
+
+    for (i, wd) in weekdays.iter().enumerate() {
+        let cx = grid_x + (i * (cell_inner_w + 1)) as u16;
+        let centered = format!(
+            "{}{}",
+            " ".repeat(cell_inner_w.saturating_sub(wd.width()) / 2),
+            wd
+        );
+        queue!(
+            stdout,
+            MoveTo(cx, y_top + 1),
+            SetForegroundColor(Color::DarkGrey),
+            Print(pad_to_width(
+                &clamp_text(&centered, cell_inner_w),
+                cell_inner_w
+            )),
+            ResetColor
+        )?;
+    }
+
+    let week_rows_available = body_bottom.saturating_sub(grid_top).saturating_add(1) as usize;
+    let week_cell_h = (week_rows_available / 6).max(2);
+    let grid_bottom = grid_top + (week_cell_h * 6).saturating_sub(1) as u16;
+
+    let month_start = first_of_month
+        - chrono::Duration::days(first_of_month.weekday().num_days_from_monday() as i64);
+
+    let mut date_entries: std::collections::HashMap<chrono::NaiveDate, Vec<(i32, String, Color)>> =
+        std::collections::HashMap::new();
+
+    for evt in &app.calendar_events {
+        let parsed = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&evt.start_date) {
+            let local_dt = dt.with_timezone(&Local);
+            let sort = (local_dt.hour() * 60 + local_dt.minute()) as i32;
+            let time = if evt.all_day {
+                None
+            } else {
+                Some(local_dt.format("%H:%M").to_string())
+            };
+            Some((local_dt.date_naive(), sort, time))
+        } else if let Ok(d) = chrono::NaiveDate::parse_from_str(&evt.start_date, "%Y-%m-%d") {
+            Some((d, -1, None))
+        } else {
+            None
+        };
+        if let Some((date, sort, time)) = parsed {
+            let end_time = chrono::DateTime::parse_from_rfc3339(&evt.end_date)
+                .ok()
+                .map(|dt| dt.with_timezone(&Local).format("%H:%M").to_string());
+            let mut line = if let Some(t) = time {
+                if let Some(end) = end_time {
+                    format!("{t}-{end} {} [{}]", evt.title, evt.calendar_name)
+                } else {
+                    format!("{t} {} [{}]", evt.title, evt.calendar_name)
+                }
+            } else {
+                format!("• {} [{}]", evt.title, evt.calendar_name)
+            };
+            if evt.location.is_some() {
+                line.push_str(" @");
+            }
+            if evt.notes.is_some() {
+                line.push_str(" ✎");
+            }
+            date_entries
+                .entry(date)
+                .or_default()
+                .push((sort, line, Color::Magenta));
+        }
+    }
+
+    for task in &app.tasks {
+        if let Some(due) = task.due_date {
+            let color = match task.progress {
+                Progress::Done => Color::DarkGrey,
+                Progress::InProgress => Color::Yellow,
+                Progress::Todo => Color::Blue,
+                Progress::Backlog => Color::DarkGrey,
+                Progress::Archived => Color::DarkGrey,
+            };
+            date_entries
+                .entry(due)
+                .or_default()
+                .push((2_000, format!("◦ {}", task.title), color));
+        }
+    }
+
+    for entries in date_entries.values_mut() {
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    }
+
+    let blank_cell = pad_to_width("", cell_inner_w);
+    for week in 0..6usize {
+        let week_top = grid_top + (week * week_cell_h) as u16;
+        if week > 0 {
+            let mut sep = String::new();
+            for col in 0..7 {
+                if col > 0 {
+                    sep.push('┼');
+                }
+                sep.push_str(&"─".repeat(cell_inner_w));
+            }
+            queue!(
+                stdout,
+                MoveTo(grid_x, week_top.saturating_sub(1)),
+                SetForegroundColor(Color::DarkGrey),
+                Print(&sep),
+                ResetColor
+            )?;
+        }
+
+        for col in 0..7usize {
+            let cell_x = grid_x + (col * (cell_inner_w + 1)) as u16;
+            let date = month_start + chrono::Duration::days((week * 7 + col) as i64);
+            let in_month = date.month() == month;
+            let is_today = date == today;
+
+            for row in 0..week_cell_h {
+                let y = week_top + row as u16;
+                queue!(stdout, MoveTo(cell_x, y), Print(&blank_cell))?;
+            }
+
+            let day_label = if is_today {
+                format!("● {:>2}", date.day())
+            } else {
+                format!("{:>2}", date.day())
+            };
+            let day_text = clamp_text(&day_label, cell_inner_w);
+            let day_pad = " ".repeat(cell_inner_w.saturating_sub(day_text.width()));
+            queue!(stdout, MoveTo(cell_x, week_top))?;
+            if is_today {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Black),
+                    SetBackgroundColor(Color::White),
+                    Print(format!("{}{}", day_pad, day_text)),
+                    ResetColor
+                )?;
+            } else if in_month {
+                queue!(stdout, Print(format!("{}{}", day_pad, day_text)))?;
+            } else {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(format!("{}{}", day_pad, day_text)),
+                    ResetColor
+                )?;
+            }
+
+            let row_capacity = week_cell_h.saturating_sub(1);
+            if row_capacity == 0 {
+                continue;
+            }
+
+            if let Some(entries) = date_entries.get(&date) {
+                let (show_count, more_count) = if entries.len() > row_capacity {
+                    (
+                        row_capacity.saturating_sub(1),
+                        entries.len() - row_capacity.saturating_sub(1),
+                    )
+                } else {
+                    (entries.len(), 0)
+                };
+
+                for (r, (_sort, text, color)) in entries.iter().take(show_count).enumerate() {
+                    let y = week_top + 1 + r as u16;
+                    queue!(stdout, MoveTo(cell_x, y))?;
+                    let draw_color = if in_month { *color } else { Color::DarkGrey };
+                    queue!(
+                        stdout,
+                        SetForegroundColor(draw_color),
+                        Print(pad_to_width(&clamp_text(text, cell_inner_w), cell_inner_w)),
+                        ResetColor
+                    )?;
+                }
+
+                if more_count > 0 {
+                    let y = week_top + week_cell_h as u16 - 1;
+                    let text = format!("+{} more", more_count);
+                    queue!(
+                        stdout,
+                        MoveTo(cell_x, y),
+                        SetForegroundColor(Color::DarkGrey),
+                        Print(pad_to_width(&clamp_text(&text, cell_inner_w), cell_inner_w)),
+                        ResetColor
+                    )?;
+                }
+            }
+        }
+    }
+
+    for col in 0..6usize {
+        let sep_x = grid_x + (col * (cell_inner_w + 1) + cell_inner_w) as u16;
+        for y in grid_top..=grid_bottom {
+            queue!(
+                stdout,
+                MoveTo(sep_x, y),
+                SetForegroundColor(Color::DarkGrey),
+                Print("│"),
+                ResetColor
+            )?;
+        }
+    }
+
+    if grid_bottom < body_bottom {
+        let blank = pad_to_width("", content_width);
+        for y in grid_bottom + 1..=body_bottom {
+            queue!(stdout, MoveTo(x, y), Print(&blank))?;
+        }
+    }
+
+    let help = if app.google_connected {
+        " Month view • magenta=calendar events • blue/yellow=task due dates"
+    } else {
+        " Month view • connect Google in Settings (0) to show calendar events"
+    };
+    queue!(
+        stdout,
+        MoveTo(x, y_help),
+        SetForegroundColor(Color::DarkGrey),
+        Print(clamp_text(help, content_width)),
+        ResetColor
+    )?;
+
     Ok(())
 }
 
