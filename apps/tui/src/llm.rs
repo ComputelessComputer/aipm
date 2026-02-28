@@ -61,7 +61,7 @@ pub struct TaskUpdate {
     pub description: Option<String>,
     pub progress: Option<Progress>,
     pub priority: Option<Priority>,
-    pub due_date: Option<NaiveDate>,
+    pub due_date: Option<Option<NaiveDate>>,
     pub dependencies: Vec<String>,
     pub parent_id: Option<String>,
 }
@@ -777,13 +777,7 @@ fn enrich_task(cfg: &LlmConfig, job: &AiJob) -> AiResult {
     }
 
     if !job.lock_due_date {
-        if let Some(date_str) = enriched.due_date.as_deref().map(|s| s.trim()) {
-            if !date_str.is_empty() {
-                if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    update.due_date = Some(date);
-                }
-            }
-        }
+        update.due_date = parse_due_date_update(enriched.due_date.as_ref());
     }
 
     if let Some(deps) = enriched.dependencies {
@@ -858,7 +852,7 @@ struct Enriched {
     description: Option<String>,
     progress: Option<String>,
     priority: Option<String>,
-    due_date: Option<String>,
+    due_date: Option<serde_json::Value>,
     dependencies: Option<Vec<String>>,
     parent_id: Option<String>,
     subtasks: Option<Vec<SubTaskEnriched>>,
@@ -887,6 +881,28 @@ fn parse_priority(input: &str) -> Option<Priority> {
         "med" | "medium" => Some(Priority::Medium),
         "high" => Some(Priority::High),
         "crit" | "critical" => Some(Priority::Critical),
+        _ => None,
+    }
+}
+
+fn parse_due_date_text(raw: &str) -> Option<Option<NaiveDate>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed.eq_ignore_ascii_case("null")
+        || trimmed.eq_ignore_ascii_case("clear")
+    {
+        return Some(None);
+    }
+    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .ok()
+        .map(Some)
+}
+
+fn parse_due_date_update(input: Option<&serde_json::Value>) -> Option<Option<NaiveDate>> {
+    match input? {
+        serde_json::Value::Null => Some(None),
+        serde_json::Value::String(raw) => parse_due_date_text(raw),
         _ => None,
     }
 }
@@ -921,7 +937,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         .join("|");
 
     let user = format!(
-        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (set unchanged fields to null):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"parent_id\": \"id_prefix\" | \"none\" | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- To move this task under another task as a sub-task, set \"parent_id\" to the target task's id_prefix. To promote to a root task, set \"parent_id\" to \"none\".\n- Only include fields that should change. Set unchanged fields to null.\n",
+        "Current task:\n{}\n\nInstruction: {}\n\nExisting tasks (id_prefix [bucket] title):\n{}\nReturn JSON with ONLY fields that should change (omit unchanged fields):\n{{\n  \"title\": string | null,\n  \"bucket\": {bucket_enum} | null,\n  \"description\": string | null,\n  \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\" | null,\n  \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\" | null,\n  \"due_date\": \"YYYY-MM-DD\" | null,\n  \"dependencies\": [\"id_prefix\", ...] | null,\n  \"parent_id\": \"id_prefix\" | \"none\" | null,\n  \"subtasks\": [{{\"title\": string, \"description\": string, \"bucket\": {bucket_enum}, \"priority\": \"Low\"|\"Medium\"|\"High\"|\"Critical\", \"progress\": \"Backlog\"|\"Todo\"|\"In progress\"|\"Done\", \"due_date\": \"YYYY-MM-DD\" | null, \"depends_on\": [0-based index, ...]}}] | null\n}}\nRules:\n- If the instruction asks to create sub-issues, sub-tasks, break down, or decompose the task, return them as entries in the \"subtasks\" array. NEVER write sub-task lists, numbered breakdowns, or step-by-step plans into the \"description\" field.\n- depends_on is an array of 0-based indices into the subtasks array representing execution order. Use it to express sequential dependencies between subtasks.\n- Subtasks inherit the parent task's bucket and priority unless the instruction specifies otherwise.\n- To move this task under another task as a sub-task, set \"parent_id\" to the target task's id_prefix. To promote to a root task, set \"parent_id\" to \"none\".\n- Omit unchanged fields.\n- To remove an existing due date, set \"due_date\" to null.\n",
         snapshot,
         instruction,
         context_lines
@@ -1007,13 +1023,7 @@ fn edit_task(cfg: &LlmConfig, job: &AiJob, instruction: &str) -> AiResult {
         update.progress = Some(prog);
     }
 
-    if let Some(date_str) = enriched.due_date.as_deref().map(|s| s.trim()) {
-        if !date_str.is_empty() {
-            if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                update.due_date = Some(date);
-            }
-        }
-    }
+    update.due_date = parse_due_date_update(enriched.due_date.as_ref());
 
     if let Some(deps) = enriched.dependencies {
         let mut out = Vec::new();
@@ -1120,7 +1130,7 @@ struct UpdateTaskArgs {
     description: Option<String>,
     priority: Option<String>,
     progress: Option<String>,
-    due_date: Option<String>,
+    due_date: Option<serde_json::Value>,
     dependencies: Option<Vec<String>>,
     subtasks: Option<Vec<SubTaskArg>>,
     parent_id: Option<String>,
@@ -1223,7 +1233,10 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
                     "description": {"type": "string", "description": "Brief task description"},
                     "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
                     "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
-                    "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
+                    "due_date": {
+                        "type": ["string", "null"],
+                        "description": "YYYY-MM-DD format, or null to clear due date"
+                    },
                     "dependencies": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -1520,10 +1533,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .priority
                         .as_deref()
                         .and_then(|s| parse_priority(s.trim())),
-                    due_date: parsed
-                        .due_date
-                        .as_deref()
-                        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                    due_date: parsed.due_date.as_deref().and_then(parse_due_date_text),
                     dependencies: resolve_deps(parsed.dependencies, &allowed),
                     parent_id: None,
                 },
@@ -1578,10 +1588,7 @@ fn triage_task(cfg: &LlmConfig, job: &AiJob, raw_input: &str) -> AiResult {
                         .priority
                         .as_deref()
                         .and_then(|s| parse_priority(s.trim())),
-                    due_date: parsed
-                        .due_date
-                        .as_deref()
-                        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()),
+                    due_date: parse_due_date_update(parsed.due_date.as_ref()),
                     dependencies: resolve_deps(parsed.dependencies, &allowed),
                     parent_id,
                 },
@@ -1862,4 +1869,36 @@ pub fn filter_email_for_suggestions(
             .unwrap_or_else(|| format!("From: {}", sender)),
         priority: parsed.priority.unwrap_or_else(|| "Medium".to_string()),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_due_date_update_handles_missing_and_null() {
+        assert_eq!(parse_due_date_update(None), None);
+        assert_eq!(
+            parse_due_date_update(Some(&serde_json::Value::Null)),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn parse_due_date_update_handles_string_values() {
+        assert_eq!(
+            parse_due_date_update(Some(&serde_json::Value::String("2026-03-01".to_string()))),
+            Some(Some(
+                NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date constant")
+            ))
+        );
+        assert_eq!(
+            parse_due_date_update(Some(&serde_json::Value::String("none".to_string()))),
+            Some(None)
+        );
+        assert_eq!(
+            parse_due_date_update(Some(&serde_json::Value::String("invalid".to_string()))),
+            None
+        );
+    }
 }

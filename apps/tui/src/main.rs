@@ -2573,7 +2573,11 @@ fn commit_edit_buf(app: &mut App) {
         }
         EditField::DueDate => {
             let s = app.edit_buf.trim();
-            if s.is_empty() {
+            if s.is_empty()
+                || s.eq_ignore_ascii_case("none")
+                || s.eq_ignore_ascii_case("null")
+                || s.eq_ignore_ascii_case("clear")
+            {
                 task.due_date = None;
                 task.updated_at = now;
             } else if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
@@ -3520,7 +3524,7 @@ fn poll_ai(app: &mut App) -> bool {
                         task.priority = priority;
                     }
                     if let Some(due_date) = result.update.due_date {
-                        task.due_date = Some(due_date);
+                        task.due_date = due_date;
                     }
                     if !result.update.dependencies.is_empty() {
                         task.dependencies = resolve_dependency_prefixes(
@@ -4186,8 +4190,8 @@ fn apply_update(
     }
 
     if let Some(due_date) = update.due_date {
-        if task.due_date != Some(due_date) {
-            task.due_date = Some(due_date);
+        if task.due_date != due_date {
+            task.due_date = due_date;
             task_changed = true;
         }
     }
@@ -7991,7 +7995,7 @@ fn run_cli(instruction: &str) -> io::Result<()> {
                         task.priority = priority;
                     }
                     if let Some(due_date) = result.update.due_date {
-                        task.due_date = Some(due_date);
+                        task.due_date = due_date;
                     }
                     if !result.update.dependencies.is_empty() {
                         task.dependencies = resolve_dependency_prefixes(
@@ -8498,4 +8502,38 @@ fn print_help() {
     println!("  ANTHROPIC_API_KEY=...             (for claude-* models)");
     println!("  AIPM_MODEL=...                    (default: claude-sonnet-4-5)");
     println!("  AIPM_DATA_DIR=...                 (override data directory)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn apply_update_clears_due_date_when_requested() {
+        let now = Utc::now();
+        let mut task = Task::new("Inbox".to_string(), "Task".to_string(), now);
+        task.due_date = Some(NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date constant"));
+
+        let update = llm::TaskUpdate {
+            due_date: Some(None),
+            ..llm::TaskUpdate::default()
+        };
+
+        assert!(apply_update(&mut task, &update, &[], now));
+        assert_eq!(task.due_date, None);
+    }
+
+    #[test]
+    fn apply_update_leaves_due_date_when_not_provided() {
+        let now = Utc::now();
+        let mut task = Task::new("Inbox".to_string(), "Task".to_string(), now);
+        let due = NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date constant");
+        task.due_date = Some(due);
+
+        let update = llm::TaskUpdate::default();
+
+        assert!(!apply_update(&mut task, &update, &[], now));
+        assert_eq!(task.due_date, Some(due));
+    }
 }

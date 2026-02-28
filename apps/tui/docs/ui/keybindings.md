@@ -106,6 +106,7 @@ For due date field, enter dates in `YYYY-MM-DD` format or use:
 - `today` — Set to current date
 - `tomorrow` — Set to next day
 - `<empty>` — Clear due date
+- `none` / `null` / `clear` — Clear due date
 
 ## Settings Tab
 
