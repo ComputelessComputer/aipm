@@ -133,32 +133,21 @@ const features = [
 
   .hero {
     position: relative;
+    padding: clamp(1.8rem, 3.8vw, 3rem);
     padding-bottom: clamp(2.8rem, 5vw, 4.8rem);
-    border-bottom: 1px solid var(--color-border);
+    border: 1px solid #d9deef;
+    border-radius: 16px;
+    background: #ffffff;
+    color: #121a3c;
     text-align: left;
   }
 
-  .hero::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image: repeating-linear-gradient(135deg, rgba(125, 138, 255, 0.09) 0, rgba(125, 138, 255, 0.09) 1px, transparent 1px, transparent 9px);
-    opacity: 0.38;
-    pointer-events: none;
+  .hero .section-kicker {
+    color: #5d6587;
   }
 
-  .hero::after {
-    content: "";
-    position: absolute;
-    top: -18%;
-    right: -22%;
-    width: min(64vw, 860px);
-    height: min(64vw, 860px);
-    border-radius: 50%;
-    background: conic-gradient(from 215deg at 50% 50%, rgba(96, 85, 255, 0.96), rgba(255, 121, 67, 0.92), rgba(243, 91, 228, 0.82), rgba(96, 85, 255, 0.96));
-    filter: blur(38px) saturate(115%);
-    opacity: 0.26;
-    pointer-events: none;
+  .hero .kicker-dot {
+    background: #ff7a45;
   }
 
   .hero-grid {
@@ -192,15 +181,12 @@ const features = [
   .hero-tagline {
     margin-bottom: 0.95rem;
     font-size: clamp(1rem, 1.7vw, 1.7rem);
-    color: #b4bcdf;
+    color: #636c90;
     white-space: nowrap;
   }
 
   .hero-tagline-highlight {
-    background: linear-gradient(90deg, #938bff 0%, #69d5ff 42%, #ff9a59 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+    color: #5a54e8;
     font-weight: 600;
   }
 
@@ -210,7 +196,7 @@ const features = [
     font-family: var(--font-mono);
     font-size: clamp(0.95rem, 1.2vw, 1.15rem);
     line-height: 1.52;
-    color: #d6ddfa;
+    color: #556085;
   }
 
   .install-cmd {
@@ -220,22 +206,22 @@ const features = [
     text-align: left;
     cursor: pointer;
     border-radius: 10px;
-    border: 1px solid rgba(116, 133, 226, 0.55);
-    background: linear-gradient(140deg, rgba(22, 30, 68, 0.95), rgba(13, 20, 51, 0.9));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 10px 26px rgba(7, 9, 20, 0.45);
+    border: 1px solid #ccd3f0;
+    background: #f7f9ff;
+    box-shadow: 0 8px 18px rgba(18, 27, 70, 0.08);
     padding: 0.9rem 1rem;
     transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
 
   .install-cmd:hover {
-    border-color: rgba(144, 154, 246, 0.8);
-    background: linear-gradient(140deg, rgba(28, 39, 84, 0.96), rgba(16, 25, 58, 0.93));
+    border-color: #adb8ea;
+    background: #ffffff;
   }
 
   .install-cmd code {
     display: flex;
     align-items: center;
-    color: #e4e9ff;
+    color: #1b2450;
     font-size: clamp(0.86rem, 1.45vw, 1rem);
     line-height: 1.35;
     white-space: nowrap;
@@ -246,19 +232,19 @@ const features = [
   }
 
   .terminal-prompt {
-    color: #7f76ff;
+    color: #5a54e8;
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
   }
 
   .install-cmd.copied .terminal-prompt {
-    color: #3ed6a4;
+    color: #13a66d;
   }
 
   .hero-visual {
-    border: 1px solid rgba(122, 138, 232, 0.42);
-    background: radial-gradient(circle at 12% 10%, rgba(140, 120, 255, 0.19), transparent 38%), radial-gradient(circle at 95% 95%, rgba(255, 144, 84, 0.16), transparent 40%), linear-gradient(160deg, rgba(20, 28, 64, 0.8), rgba(13, 19, 46, 0.85));
+    border: 1px solid #d6dcf4;
+    background: #ffffff;
     border-radius: 12px;
     padding: clamp(1.2rem, 2.8vw, 1.8rem);
     min-height: 260px;
@@ -275,18 +261,18 @@ const features = [
     justify-content: space-between;
     gap: 1.2rem;
     padding-top: 0.72rem;
-    border-top: 1px dashed rgba(140, 153, 228, 0.35);
+    border-top: 1px dashed #e0e6f6;
   }
 
   .signal-dot {
     width: 0.5rem;
     height: 0.5rem;
     border-radius: 999px;
-    background: #8d98d2;
+    background: #9ca6cb;
   }
 
   .signal-dot.accent {
-    background: linear-gradient(135deg, #6f66ff, #ff8e54);
+    background: #ff7a45;
   }
 
   .value-props,
