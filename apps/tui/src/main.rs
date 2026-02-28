@@ -37,7 +37,6 @@ enum Tab {
     Timeline,
     Kanban,
     Settings,
-    Suggestions,
 }
 const MODEL_OPTIONS: &[&str] = &[
     // Anthropic
@@ -56,8 +55,7 @@ impl Tab {
             Tab::Calendar => Tab::Default,
             Tab::Default => Tab::Timeline,
             Tab::Timeline => Tab::Kanban,
-            Tab::Kanban => Tab::Suggestions,
-            Tab::Suggestions => Tab::Settings,
+            Tab::Kanban => Tab::Settings,
             Tab::Settings => Tab::Checklist,
         }
     }
@@ -68,8 +66,7 @@ impl Tab {
             Tab::Default => Tab::Calendar,
             Tab::Timeline => Tab::Default,
             Tab::Kanban => Tab::Timeline,
-            Tab::Suggestions => Tab::Kanban,
-            Tab::Settings => Tab::Suggestions,
+            Tab::Settings => Tab::Kanban,
         }
     }
 }
@@ -86,6 +83,12 @@ enum Focus {
 enum InputMode {
     Chat,
     Add,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChecklistSection {
+    Tasks,
+    Suggestions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +264,7 @@ struct App {
 
     input_mode: InputMode,
     checklist_selected: usize,
+    checklist_section: ChecklistSection,
     checklist_expanded: std::collections::HashSet<Uuid>,
     checklist_frozen_order: Option<Vec<(usize, bool)>>,
 
@@ -512,6 +516,7 @@ fn main() -> io::Result<()> {
         pending_memory: None,
         input_mode: InputMode::Chat,
         checklist_selected: 0,
+        checklist_section: ChecklistSection::Tasks,
         checklist_expanded: std::collections::HashSet::new(),
         checklist_frozen_order: None,
         chat_history: Vec::new(),
@@ -818,10 +823,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         return handle_input_key(app, key);
     }
 
-    // Tab switching with 1/2/3/4/5/0 (no modifiers).
+    // Tab switching with 1/2/3/4/5/0 and Checklist Suggestions with 6 (no modifiers).
     match key.code {
         KeyCode::Char('1') => {
             app.tab = Tab::Checklist;
+            app.checklist_section = ChecklistSection::Tasks;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
@@ -857,7 +863,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             return Ok(false);
         }
         KeyCode::Char('6') => {
-            app.tab = Tab::Suggestions;
+            app.tab = Tab::Checklist;
+            app.checklist_section = ChecklistSection::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
@@ -892,7 +899,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         Tab::Timeline => handle_timeline_key(app, key),
         Tab::Kanban => handle_kanban_key(app, key),
         Tab::Settings => handle_settings_key(app, key),
-        Tab::Suggestions => handle_suggestions_key(app, key),
     }
 }
 
@@ -910,6 +916,7 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Char('1') => {
             app.tab = Tab::Checklist;
+            app.checklist_section = ChecklistSection::Tasks;
             app.focus = Focus::Board;
             app.status = None;
         }
@@ -940,7 +947,8 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.status = None;
         }
         KeyCode::Char('6') => {
-            app.tab = Tab::Suggestions;
+            app.tab = Tab::Checklist;
+            app.checklist_section = ChecklistSection::Suggestions;
             app.focus = Focus::Board;
             app.status = None;
         }
@@ -3408,72 +3416,62 @@ fn handle_settings_edit_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     Ok(false)
 }
 
-fn handle_suggestions_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
-    match key.code {
-        KeyCode::Esc => {
-            app.focus = Focus::Tabs;
-            return Ok(false);
-        }
-        KeyCode::Char('i') => {
-            app.focus = Focus::Input;
-            return Ok(false);
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.suggestions.is_empty() {
-                return Ok(false);
-            }
-            if app.suggestions_selected == 0 {
-                app.suggestions_selected = app.suggestions.len() - 1;
-            } else {
-                app.suggestions_selected -= 1;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.suggestions.is_empty() {
-                return Ok(false);
-            }
-            app.suggestions_selected = (app.suggestions_selected + 1) % app.suggestions.len();
-        }
-        KeyCode::Enter => {
-            if let Some(suggestion) = app.suggestions.get(app.suggestions_selected).cloned() {
-                let now = Utc::now();
-                let mut task = Task::new(
-                    default_bucket_name(&app.settings),
-                    suggestion.title.clone(),
-                    now,
-                );
-                task.description = suggestion.description;
-                task.priority = suggestion.priority;
-                task.progress = Progress::Backlog;
-                let task_id = task.id;
-                app.tasks.push(task);
-                app.task_email_map
-                    .insert(task_id, suggestion.email_id.clone());
-                app.suggestions.remove(app.suggestions_selected);
-                if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
-                {
-                    app.suggestions_selected = app.suggestions.len() - 1;
-                }
-                persist(app);
-                app.status = Some((
-                    "Task created from suggestion".to_string(),
-                    Instant::now(),
-                    false,
-                ));
-            }
-        }
-        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Backspace | KeyCode::Delete => {
-            if !app.suggestions.is_empty() && app.suggestions_selected < app.suggestions.len() {
-                app.suggestions.remove(app.suggestions_selected);
-                if app.suggestions_selected >= app.suggestions.len() && !app.suggestions.is_empty()
-                {
-                    app.suggestions_selected = app.suggestions.len() - 1;
-                }
-            }
-        }
-        _ => {}
+fn clamp_suggestions_selection(app: &mut App) {
+    if app.suggestions.is_empty() {
+        app.suggestions_selected = 0;
+    } else if app.suggestions_selected >= app.suggestions.len() {
+        app.suggestions_selected = app.suggestions.len() - 1;
     }
-    Ok(false)
+}
+
+fn move_suggestions_selection(app: &mut App, delta: i32) {
+    if app.suggestions.is_empty() {
+        return;
+    }
+    clamp_suggestions_selection(app);
+    let len = app.suggestions.len() as i32;
+    let current = app.suggestions_selected as i32;
+    let next = (current + delta).rem_euclid(len) as usize;
+    app.suggestions_selected = next;
+}
+
+fn create_task_from_selected_suggestion(app: &mut App) {
+    if app.suggestions.is_empty() {
+        return;
+    }
+    clamp_suggestions_selection(app);
+    if let Some(suggestion) = app.suggestions.get(app.suggestions_selected).cloned() {
+        let now = Utc::now();
+        let mut task = Task::new(
+            default_bucket_name(&app.settings),
+            suggestion.title.clone(),
+            now,
+        );
+        task.description = suggestion.description;
+        task.priority = suggestion.priority;
+        task.progress = Progress::Backlog;
+        let task_id = task.id;
+        app.tasks.push(task);
+        app.task_email_map
+            .insert(task_id, suggestion.email_id.clone());
+        app.suggestions.remove(app.suggestions_selected);
+        clamp_suggestions_selection(app);
+        persist(app);
+        app.status = Some((
+            "Task created from suggestion".to_string(),
+            Instant::now(),
+            false,
+        ));
+    }
+}
+
+fn dismiss_selected_suggestion(app: &mut App) {
+    if app.suggestions.is_empty() {
+        return;
+    }
+    clamp_suggestions_selection(app);
+    app.suggestions.remove(app.suggestions_selected);
+    clamp_suggestions_selection(app);
 }
 
 fn poll_ai(app: &mut App) -> bool {
@@ -4095,6 +4093,7 @@ fn poll_suggestions(app: &mut App) -> bool {
             }
         }
     }
+    clamp_suggestions_selection(app);
     has_new
 }
 
@@ -4455,6 +4454,9 @@ fn get_active_task_id(app: &App) -> Option<Uuid> {
         }
         Tab::Kanban => app.kanban_selected,
         Tab::Checklist => {
+            if app.checklist_section != ChecklistSection::Tasks {
+                return None;
+            }
             let ordered = app
                 .checklist_frozen_order
                 .as_ref()
@@ -4657,7 +4659,6 @@ fn render(stdout: &mut Stdout, app: &mut App, clear: bool) -> io::Result<()> {
         Tab::Timeline => render_timeline_tab(stdout, app, cols, rows)?,
         Tab::Kanban => render_kanban_tab(stdout, app, cols, rows)?,
         Tab::Settings => render_settings_tab(stdout, app, cols, rows)?,
-        Tab::Suggestions => render_suggestions_tab(stdout, app, cols, rows)?,
     }
 
     render_input_bar(stdout, app, cols, rows)?;
@@ -4736,7 +4737,6 @@ fn render_tabs(stdout: &mut Stdout, app: &App, cols: u16) -> io::Result<()> {
         (Tab::Default, "3 Buckets"),
         (Tab::Timeline, "4 Timeline"),
         (Tab::Kanban, "5 Kanban"),
-        (Tab::Suggestions, "6 Suggestions"),
     ];
 
     for (tab, label) in left_tabs {
@@ -5309,20 +5309,83 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         SetAttribute(Attribute::Reset)
     )?;
 
+    queue!(stdout, MoveTo(x, 4), Print(" "))?;
+    let tasks_active = app.checklist_section == ChecklistSection::Tasks;
+    if tasks_active {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::Black),
+            SetBackgroundColor(Color::White),
+            Print(" Tasks "),
+            ResetColor
+        )?;
+    } else {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(" Tasks "),
+            ResetColor
+        )?;
+    }
+    queue!(stdout, Print("  "))?;
+    if !tasks_active {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::Black),
+            SetBackgroundColor(Color::White),
+            Print(" Suggestions "),
+            ResetColor
+        )?;
+    } else {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(" Suggestions "),
+            ResetColor
+        )?;
+    }
+
     let ordered = app
         .checklist_frozen_order
         .as_ref()
         .cloned()
         .unwrap_or_else(|| checklist_task_order(&app.tasks, &app.checklist_expanded));
-    let list_start_y = 5u16;
-    let list_height = rows.saturating_sub(list_start_y + 4) as usize;
+    let list_start_y = 6u16;
+    let help_y = rows.saturating_sub(5);
+    let content_bottom = help_y.saturating_sub(1);
+    let content_height = content_bottom
+        .saturating_sub(list_start_y)
+        .saturating_add(1) as usize;
+    if content_height == 0 {
+        return Ok(());
+    }
+
+    let mut suggestions_height = if content_height >= 16 {
+        8usize
+    } else if content_height >= 12 {
+        6usize
+    } else if content_height >= 9 {
+        4usize
+    } else {
+        0usize
+    };
+    if suggestions_height > 0 && content_height <= suggestions_height + 2 {
+        suggestions_height = 0;
+    }
+    let section_gap = if suggestions_height > 0 {
+        1usize
+    } else {
+        0usize
+    };
+    let list_height = content_height.saturating_sub(suggestions_height + section_gap);
     let sel = app.checklist_selected.min(ordered.len().saturating_sub(1));
-    let scroll = if sel >= list_height {
-        sel - list_height + 1
+    let visible_tasks = list_height.max(1);
+    let scroll = if sel >= visible_tasks {
+        sel - visible_tasks + 1
     } else {
         0
     };
-    if ordered.is_empty() {
+    if ordered.is_empty() && list_height > 0 {
         queue!(
             stdout,
             MoveTo(x, list_start_y),
@@ -5339,7 +5402,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
     for (draw_i, &(task_idx, is_child)) in ordered.iter().enumerate().skip(scroll).take(list_height)
     {
         let task = &app.tasks[task_idx];
-        let is_sel = draw_i == sel;
+        let is_sel = draw_i == sel && app.checklist_section == ChecklistSection::Tasks;
         let y = list_start_y + (draw_i - scroll) as u16;
         let checkbox = match task.progress {
             Progress::Done => "[x]",
@@ -5464,15 +5527,121 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             )?;
         }
     }
-    // help line
+
+    if suggestions_height > 0 {
+        let suggestions_y = list_start_y + list_height as u16 + section_gap as u16;
+        queue!(
+            stdout,
+            MoveTo(x, suggestions_y),
+            SetAttribute(Attribute::Bold),
+            Print(" Suggestions"),
+            SetAttribute(Attribute::Reset)
+        )?;
+
+        let connected = app.google_connected;
+        let status_label = if connected {
+            "Connected"
+        } else {
+            "Not connected"
+        };
+        let status_color = if connected {
+            Color::Green
+        } else {
+            Color::DarkGrey
+        };
+        queue!(
+            stdout,
+            MoveTo(x, suggestions_y + 1),
+            Print(" Gmail: "),
+            SetForegroundColor(status_color),
+            SetAttribute(Attribute::Bold),
+            Print(status_label),
+            SetAttribute(Attribute::Reset),
+            ResetColor
+        )?;
+
+        let body_start = suggestions_y + 2;
+        let body_height = suggestions_height.saturating_sub(2);
+        if body_height > 0 {
+            if !connected {
+                queue!(
+                    stdout,
+                    MoveTo(x, body_start),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(clamp_text(
+                        " Connect Google in Settings (0) to get Gmail suggestions.",
+                        content_width
+                    )),
+                    ResetColor
+                )?;
+            } else if app.suggestions.is_empty() {
+                queue!(
+                    stdout,
+                    MoveTo(x, body_start),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(" No suggestions yet. Polling every 60s."),
+                    ResetColor
+                )?;
+            } else {
+                let selected = app.suggestions_selected.min(app.suggestions.len() - 1);
+                let scroll = if selected >= body_height {
+                    selected - body_height + 1
+                } else {
+                    0
+                };
+                for (draw_i, suggestion) in app
+                    .suggestions
+                    .iter()
+                    .enumerate()
+                    .skip(scroll)
+                    .take(body_height)
+                {
+                    let y = body_start + (draw_i - scroll) as u16;
+                    let is_sel = draw_i == selected
+                        && app.checklist_section == ChecklistSection::Suggestions;
+                    let priority_bullet = priority_icon(suggestion.priority);
+                    let pcolor = priority_color(suggestion.priority);
+                    if is_sel {
+                        let line = format!(" {} {}", priority_bullet, suggestion.title);
+                        queue!(
+                            stdout,
+                            MoveTo(x, y),
+                            SetForegroundColor(Color::Black),
+                            SetBackgroundColor(Color::White),
+                            Print(pad_to_width(
+                                &clamp_text(&line, content_width),
+                                content_width
+                            )),
+                            ResetColor
+                        )?;
+                    } else {
+                        queue!(
+                            stdout,
+                            MoveTo(x, y),
+                            SetForegroundColor(pcolor),
+                            Print(format!(" {} ", priority_bullet)),
+                            ResetColor,
+                            Print(clamp_text(
+                                &suggestion.title,
+                                content_width.saturating_sub(3)
+                            ))
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
+    let help = if app.checklist_section == ChecklistSection::Tasks {
+        " h/l section • enter toggle • space expand • e edit • d delete • i input"
+    } else {
+        " h/l section • j/k navigate • enter create task • d dismiss • i input"
+    };
     queue!(
         stdout,
-        MoveTo(x, rows.saturating_sub(5)),
+        MoveTo(x, help_y),
         SetForegroundColor(Color::DarkGrey),
-        Print(clamp_text(
-            " enter toggle • space expand • e edit • d delete • i input",
-            content_width
-        )),
+        Print(clamp_text(help, content_width)),
         ResetColor
     )?;
     Ok(())
@@ -5485,69 +5654,102 @@ fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     let _count = ordered.len();
 
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('h') | KeyCode::Left => {
+            app.checklist_section = ChecklistSection::Tasks;
             app.checklist_frozen_order = None;
-            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
-            if !fresh.is_empty() {
-                app.checklist_selected = (app.checklist_selected + 1).min(fresh.len() - 1);
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            app.checklist_section = ChecklistSection::Suggestions;
+            app.checklist_frozen_order = None;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.checklist_section == ChecklistSection::Tasks {
+                app.checklist_frozen_order = None;
+                let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+                if !fresh.is_empty() {
+                    app.checklist_selected = (app.checklist_selected + 1).min(fresh.len() - 1);
+                }
+            } else {
+                move_suggestions_selection(app, 1);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.checklist_frozen_order = None;
-            app.checklist_selected = app.checklist_selected.saturating_sub(1);
+            if app.checklist_section == ChecklistSection::Tasks {
+                app.checklist_frozen_order = None;
+                app.checklist_selected = app.checklist_selected.saturating_sub(1);
+            } else {
+                move_suggestions_selection(app, -1);
+            }
         }
         KeyCode::Enter => {
-            if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
-                let now = Utc::now();
-                let next = match app.tasks[task_idx].progress {
-                    Progress::Done => Progress::Todo,
-                    Progress::InProgress => Progress::Done,
-                    _ => Progress::InProgress,
-                };
-                app.tasks[task_idx].set_progress(next, now);
-                let task_id = app.tasks[task_idx].id;
-                let has_parent = app.tasks[task_idx].parent_id.is_some();
-                if has_parent {
-                    sync_parent_progress(&mut app.tasks, task_id, Utc::now());
+            if app.checklist_section == ChecklistSection::Tasks {
+                if let Some(&(task_idx, _)) = ordered.get(app.checklist_selected) {
+                    let now = Utc::now();
+                    let next = match app.tasks[task_idx].progress {
+                        Progress::Done => Progress::Todo,
+                        Progress::InProgress => Progress::Done,
+                        _ => Progress::InProgress,
+                    };
+                    app.tasks[task_idx].set_progress(next, now);
+                    let task_id = app.tasks[task_idx].id;
+                    let has_parent = app.tasks[task_idx].parent_id.is_some();
+                    if has_parent {
+                        sync_parent_progress(&mut app.tasks, task_id, Utc::now());
+                    }
+                    if app.checklist_frozen_order.is_none() {
+                        app.checklist_frozen_order = Some(ordered);
+                    }
+                    persist(app);
                 }
-                if app.checklist_frozen_order.is_none() {
-                    app.checklist_frozen_order = Some(ordered);
-                }
-                persist(app);
+            } else {
+                create_task_from_selected_suggestion(app);
             }
         }
         KeyCode::Char(' ') => {
-            if let Some(&(task_idx, is_child)) = ordered.get(app.checklist_selected) {
-                if !is_child {
-                    let task_id = app.tasks[task_idx].id;
-                    let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task_id));
-                    if has_children {
-                        if app.checklist_expanded.contains(&task_id) {
-                            app.checklist_expanded.remove(&task_id);
-                        } else {
-                            app.checklist_expanded.insert(task_id);
+            if app.checklist_section == ChecklistSection::Tasks {
+                if let Some(&(task_idx, is_child)) = ordered.get(app.checklist_selected) {
+                    if !is_child {
+                        let task_id = app.tasks[task_idx].id;
+                        let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task_id));
+                        if has_children {
+                            if app.checklist_expanded.contains(&task_id) {
+                                app.checklist_expanded.remove(&task_id);
+                            } else {
+                                app.checklist_expanded.insert(task_id);
+                            }
                         }
                     }
                 }
+                app.checklist_frozen_order = None;
             }
-            app.checklist_frozen_order = None;
         }
         KeyCode::Char('e') => {
-            app.checklist_frozen_order = None;
-            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
-            if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
-                let task_id = app.tasks[task_idx].id;
-                app.selected_task_id = Some(task_id);
-                open_edit_for(app, task_id);
+            if app.checklist_section == ChecklistSection::Tasks {
+                app.checklist_frozen_order = None;
+                let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+                if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
+                    let task_id = app.tasks[task_idx].id;
+                    app.selected_task_id = Some(task_id);
+                    open_edit_for(app, task_id);
+                }
             }
         }
         KeyCode::Char('d') | KeyCode::Delete => {
-            app.checklist_frozen_order = None;
-            let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
-            if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
-                let id = app.tasks[task_idx].id;
-                app.selected_task_id = Some(id);
-                app.confirm_delete_id = Some(id);
+            if app.checklist_section == ChecklistSection::Tasks {
+                app.checklist_frozen_order = None;
+                let fresh = checklist_task_order(&app.tasks, &app.checklist_expanded);
+                if let Some(&(task_idx, _)) = fresh.get(app.checklist_selected) {
+                    let id = app.tasks[task_idx].id;
+                    app.selected_task_id = Some(id);
+                    app.confirm_delete_id = Some(id);
+                }
+            } else {
+                dismiss_selected_suggestion(app);
+            }
+        }
+        KeyCode::Char('x') | KeyCode::Backspace => {
+            if app.checklist_section == ChecklistSection::Suggestions {
+                dismiss_selected_suggestion(app);
             }
         }
         KeyCode::Char('i') => {
@@ -6794,110 +6996,6 @@ fn mask_api_key(key: &str) -> String {
     }
     let visible = &key[key.len() - 4..];
     format!("\u{2022}\u{2022}\u{2022}\u{2022}{}", visible)
-}
-
-fn render_suggestions_tab(stdout: &mut Stdout, app: &App, cols: u16, _rows: u16) -> io::Result<()> {
-    let width = cols as usize;
-    let (x_margin, _) = choose_layout(width, 1);
-    let x = x_margin as u16;
-    let content_width = width.saturating_sub(x_margin * 2);
-
-    queue!(
-        stdout,
-        MoveTo(x, 3),
-        SetAttribute(Attribute::Bold),
-        Print(" Gmail Suggestions"),
-        SetAttribute(Attribute::Reset)
-    )?;
-
-    let connected = app.google_connected;
-    let status_label = if connected {
-        "Connected"
-    } else {
-        "Not connected"
-    };
-    let status_color = if connected {
-        Color::Green
-    } else {
-        Color::DarkGrey
-    };
-    queue!(
-        stdout,
-        MoveTo(x, 5),
-        Print(" Gmail: "),
-        SetForegroundColor(status_color),
-        SetAttribute(Attribute::Bold),
-        Print(status_label),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
-
-    if !connected {
-        queue!(
-            stdout,
-            MoveTo(x, 7),
-            SetForegroundColor(Color::DarkGrey),
-            Print(" Connect Google in Settings (0) to get Gmail suggestions."),
-            ResetColor
-        )?;
-    } else if app.suggestions.is_empty() {
-        queue!(
-            stdout,
-            MoveTo(x, 7),
-            SetForegroundColor(Color::DarkGrey),
-            Print(" No suggestions yet. Polling every 60s."),
-            ResetColor
-        )?;
-    } else {
-        for (i, suggestion) in app.suggestions.iter().enumerate() {
-            let y = 7 + (i * 4) as u16;
-            let is_selected = i == app.suggestions_selected;
-
-            let priority_bullet = priority_icon(suggestion.priority);
-            let pcolor = priority_color(suggestion.priority);
-
-            queue!(stdout, MoveTo(x, y))?;
-            if is_selected {
-                queue!(
-                    stdout,
-                    SetForegroundColor(Color::Black),
-                    SetBackgroundColor(Color::White),
-                    Print(pad_to_width(
-                        &clamp_text(
-                            &format!(" {} {}", priority_bullet, suggestion.title),
-                            content_width
-                        ),
-                        content_width
-                    )),
-                    ResetColor
-                )?;
-            } else {
-                queue!(
-                    stdout,
-                    SetForegroundColor(pcolor),
-                    Print(format!(" {} ", priority_bullet)),
-                    ResetColor,
-                    Print(clamp_text(
-                        &suggestion.title,
-                        content_width.saturating_sub(4)
-                    ))
-                )?;
-            }
-
-            queue!(
-                stdout,
-                MoveTo(x, y + 1),
-                SetForegroundColor(Color::DarkGrey),
-                Print(format!(
-                    "   {}",
-                    clamp_text(&suggestion.description, content_width.saturating_sub(3))
-                )),
-                ResetColor
-            )?;
-        }
-    }
-
-    Ok(())
 }
 
 fn render_toast(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) -> io::Result<()> {
