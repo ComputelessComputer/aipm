@@ -239,6 +239,7 @@ struct App {
 
     timeline_selected: usize,
     timeline_scroll: usize,
+    timeline_collapsed: std::collections::HashSet<Uuid>,
 
     kanban_stage: Progress,
     kanban_selected: Option<Uuid>,
@@ -547,6 +548,7 @@ fn main() -> io::Result<()> {
         edit_parent_stack: Vec::new(),
         timeline_selected: 0,
         timeline_scroll: 0,
+        timeline_collapsed: std::collections::HashSet::new(),
         kanban_stage: Progress::Backlog,
         kanban_selected: None,
         kanban_scroll: [0; 4],
@@ -1023,7 +1025,10 @@ fn task_start_date(task: &Task) -> chrono::NaiveDate {
         .unwrap_or_else(|| task.created_at.date_naive())
 }
 
-fn sorted_timeline_tasks(tasks: &[Task]) -> Vec<usize> {
+fn sorted_timeline_tasks(
+    tasks: &[Task],
+    collapsed: &std::collections::HashSet<Uuid>,
+) -> Vec<usize> {
     // Collect top-level (non-child) task indices, sorted by start date.
     let mut roots: Vec<usize> = (0..tasks.len()).filter(|&i| !tasks[i].is_child()).collect();
     roots.sort_by(|&a, &b| task_start_date(&tasks[a]).cmp(&task_start_date(&tasks[b])));
@@ -1031,6 +1036,9 @@ fn sorted_timeline_tasks(tasks: &[Task]) -> Vec<usize> {
     let mut result: Vec<usize> = Vec::with_capacity(tasks.len());
     for &ri in &roots {
         result.push(ri);
+        if collapsed.contains(&tasks[ri].id) {
+            continue;
+        }
         let mut children: Vec<usize> = children_of(tasks, tasks[ri].id);
         children.sort_by(|&a, &b| task_start_date(&tasks[a]).cmp(&task_start_date(&tasks[b])));
         result.extend(children);
@@ -1056,24 +1064,41 @@ fn handle_timeline_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
             app.focus = Focus::Input;
             return Ok(false);
         }
+        _ => {}
+    }
+
+    let indices = sorted_timeline_tasks(&app.tasks, &app.timeline_collapsed);
+    let count = indices.len();
+    if count == 0 {
+        app.timeline_selected = 0;
+        return Ok(false);
+    }
+    if app.timeline_selected >= count {
+        app.timeline_selected = count - 1;
+    }
+
+    match key.code {
         KeyCode::Enter | KeyCode::Char('e') => {
-            let indices = sorted_timeline_tasks(&app.tasks);
             if let Some(&idx) = indices.get(app.timeline_selected) {
                 let task_id = app.tasks[idx].id;
                 app.selected_task_id = Some(task_id);
                 open_edit_for(app, task_id);
             }
-            return Ok(false);
         }
-        _ => {}
-    }
-
-    let count = app.tasks.len();
-    if count == 0 {
-        return Ok(false);
-    }
-
-    match key.code {
+        KeyCode::Char(' ') => {
+            if let Some(&idx) = indices.get(app.timeline_selected) {
+                let task_id = app.tasks[idx].id;
+                if app.tasks[idx].parent_id.is_none()
+                    && app.tasks.iter().any(|t| t.parent_id == Some(task_id))
+                {
+                    if app.timeline_collapsed.contains(&task_id) {
+                        app.timeline_collapsed.remove(&task_id);
+                    } else {
+                        app.timeline_collapsed.insert(task_id);
+                    }
+                }
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.timeline_selected == 0 {
                 app.timeline_selected = count - 1;
@@ -4513,7 +4538,7 @@ fn get_active_task_id(app: &App) -> Option<Uuid> {
     match app.tab {
         Tab::Default => app.selected_task_id,
         Tab::Timeline => {
-            let indices = sorted_timeline_tasks(&app.tasks);
+            let indices = sorted_timeline_tasks(&app.tasks, &app.timeline_collapsed);
             indices
                 .get(app.timeline_selected)
                 .map(|&idx| app.tasks[idx].id)
@@ -6310,7 +6335,7 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
     };
 
     // Use sorted_timeline_tasks for consistent ordering with key handler
-    let indices = sorted_timeline_tasks(&app.tasks);
+    let indices = sorted_timeline_tasks(&app.tasks, &app.timeline_collapsed);
     let task_count = indices.len();
 
     // Clamp selection
@@ -6351,8 +6376,8 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
 
         // Task label
         const BUCKET_SYMBOLS: &[&str] = &["●", "◆", "■", "▲", "★", "♦"];
-        let prefix = if task.is_child() {
-            "↳"
+        let label = if task.is_child() {
+            format!("↳ {}", task.title)
         } else {
             let bi = app
                 .settings
@@ -6360,9 +6385,19 @@ fn render_timeline_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16)
                 .iter()
                 .position(|b| b.name == task.bucket)
                 .unwrap_or(0);
-            BUCKET_SYMBOLS[bi % BUCKET_SYMBOLS.len()]
+            let symbol = BUCKET_SYMBOLS[bi % BUCKET_SYMBOLS.len()];
+            let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task.id));
+            if has_children {
+                let fold = if app.timeline_collapsed.contains(&task.id) {
+                    "▸"
+                } else {
+                    "▾"
+                };
+                format!("{} {} {}", symbol, fold, task.title)
+            } else {
+                format!("{} {}", symbol, task.title)
+            }
         };
-        let label = format!("{} {}", prefix, task.title);
 
         queue!(stdout, MoveTo(x, y))?;
         if is_selected {
