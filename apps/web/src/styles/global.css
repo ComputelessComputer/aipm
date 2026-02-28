@@ -18,7 +18,7 @@
   --space-xl: 2rem;
   --space-2xl: 3rem;
   --space-3xl: 4.5rem;
-  --max-width: 1340px;
+  --max-width: 1200px;
   --nav-height: 72px;
   --transition-fast: 150ms ease;
 }
@@ -171,7 +171,7 @@ footer .footer-links a:hover {
 
 main {
   flex: 1;
-  max-width: 100%;
+  max-width: var(--max-width);
   margin: 0 auto;
   width: 100%;
   padding: clamp(2.3rem, 4.7vw, 4.5rem) clamp(1.25rem, 3.2vw, 2.9rem) clamp(3.2rem, 8vw, 6.2rem);
