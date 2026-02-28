@@ -53,13 +53,6 @@ const features = [
           title="Click to copy"
         ><code><span class="terminal-prompt" aria-hidden="true"><span class="prompt-dollar">$</span><span class="prompt-check"><CheckIcon size={16} strokeWidth={2.5} /></span></span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
       </div>
-
-      <div class="hero-visual" aria-hidden="true">
-        <span class="ribbon ribbon-a"></span>
-        <span class="ribbon ribbon-b"></span>
-        <span class="ribbon ribbon-c"></span>
-        <span class="ribbon ribbon-d"></span>
-      </div>
     </div>
   </section>
 
@@ -131,11 +124,6 @@ const features = [
 
   .hero {
     position: relative;
-    padding: clamp(1.8rem, 3.8vw, 3rem);
-    padding-bottom: clamp(2.8rem, 5vw, 4.8rem);
-    border: none;
-    border-radius: 0;
-    background: none;
     color: #2c2418;
     text-align: left;
     overflow: hidden;
@@ -229,60 +217,6 @@ const features = [
     color: #5a9a6b;
   }
 
-  .hero-visual {
-    position: relative;
-    border: 1px solid #e5dbc8;
-    background: linear-gradient(180deg, #f7f1e8 0%, #f3ede4 100%);
-    border-radius: 12px;
-    min-height: 280px;
-    overflow: hidden;
-    justify-self: stretch;
-    width: 100%;
-  }
-
-  .ribbon {
-    position: absolute;
-    border-radius: 999px;
-    transform-origin: center;
-    filter: saturate(90%);
-  }
-
-  .ribbon-a {
-    width: 520px;
-    height: 140px;
-    right: -170px;
-    top: 20px;
-    transform: rotate(-36deg);
-    background: linear-gradient(90deg, rgba(192, 122, 62, 0) 0%, rgba(192, 122, 62, 0.55) 44%, rgba(212, 165, 116, 0.7) 100%);
-  }
-
-  .ribbon-b {
-    width: 540px;
-    height: 160px;
-    right: -170px;
-    top: 110px;
-    transform: rotate(-36deg);
-    background: linear-gradient(90deg, rgba(180, 120, 80, 0) 4%, rgba(180, 120, 80, 0.5) 45%, rgba(210, 170, 110, 0.65) 100%);
-  }
-
-  .ribbon-c {
-    width: 560px;
-    height: 120px;
-    right: -190px;
-    top: 205px;
-    transform: rotate(-36deg);
-    background: linear-gradient(90deg, rgba(140, 160, 120, 0) 0%, rgba(140, 160, 120, 0.45) 46%, rgba(192, 160, 110, 0.55) 100%);
-  }
-
-  .ribbon-d {
-    width: 450px;
-    height: 80px;
-    right: -150px;
-    top: 14px;
-    transform: rotate(-36deg);
-    opacity: 0.55;
-    background: linear-gradient(90deg, rgba(212, 180, 130, 0) 0%, rgba(212, 180, 130, 0.5) 52%, rgba(192, 150, 100, 0.55) 100%);
-  }
 
   .value-props,
   .demo,
@@ -366,10 +300,6 @@ const features = [
   }
 
   @media (min-width: 900px) {
-    .hero-grid {
-      grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-      align-items: stretch;
-    }
 
     .value-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -391,16 +321,5 @@ const features = [
       justify-content: flex-start;
     }
 
-    .hero-visual {
-      min-height: 220px;
-    }
-
-    .ribbon-a,
-    .ribbon-b,
-    .ribbon-c,
-    .ribbon-d {
-      right: -220px;
-      transform: rotate(-39deg);
-    }
   }
 </style>
