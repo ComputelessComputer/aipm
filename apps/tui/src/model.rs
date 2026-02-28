@@ -175,6 +175,12 @@ pub struct Suggestion {
 pub enum EmailEvent {
     NewSuggestion(Suggestion),
     Archived(String),
+    PollSummary {
+        checked_at: DateTime<Utc>,
+        unread_count: usize,
+        actionable_count: usize,
+        ok: bool,
+    },
 }
 
 /// Derive a parent's progress from its children.

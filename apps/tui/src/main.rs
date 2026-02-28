@@ -282,6 +282,10 @@ struct App {
 
     suggestions: Vec<Suggestion>,
     suggestions_selected: usize,
+    suggestions_last_polled_at: Option<chrono::DateTime<Utc>>,
+    suggestions_last_poll_unread: usize,
+    suggestions_last_poll_actionable: usize,
+    suggestions_last_poll_ok: bool,
 
     suggestions_rx: Option<mpsc::Receiver<EmailEvent>>,
     task_email_map: std::collections::HashMap<Uuid, String>,
@@ -338,14 +342,42 @@ fn spawn_email_poller(
     std::thread::spawn(move || {
         let mut tracked_email_ids = std::collections::HashSet::<String>::new();
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            let checked_at = chrono::Utc::now();
             let token = match google::get_valid_token(&data_dir) {
                 Ok(t) => t,
-                Err(_) => continue,
+                Err(_) => {
+                    if tx
+                        .send(EmailEvent::PollSummary {
+                            checked_at,
+                            unread_count: 0,
+                            actionable_count: 0,
+                            ok: false,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    continue;
+                }
             };
             let emails: Vec<google::Email> = match google::get_recent_emails(&token, 10) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    if tx
+                        .send(EmailEvent::PollSummary {
+                            checked_at,
+                            unread_count: 0,
+                            actionable_count: 0,
+                            ok: false,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    continue;
+                }
             };
             let current_unread_ids: std::collections::HashSet<String> = emails
                 .iter()
@@ -358,9 +390,12 @@ fn spawn_email_poller(
                 .cloned()
                 .collect();
             for email_id in archived {
-                let _ = tx.send(EmailEvent::Archived(email_id.clone()));
+                if tx.send(EmailEvent::Archived(email_id.clone())).is_err() {
+                    return;
+                }
                 tracked_email_ids.remove(&email_id);
             }
+            let mut actionable_count = 0usize;
             for email in emails {
                 if email.is_read {
                     continue;
@@ -383,6 +418,7 @@ fn spawn_email_poller(
                     "critical" => Priority::Critical,
                     _ => Priority::Medium,
                 };
+                actionable_count += 1;
                 let suggestion = Suggestion {
                     id: uuid::Uuid::new_v4(),
                     email_id: email.id.clone(),
@@ -391,8 +427,22 @@ fn spawn_email_poller(
                     priority,
                     created_at: chrono::Utc::now(),
                 };
-                let _ = tx.send(EmailEvent::NewSuggestion(suggestion));
+                if tx.send(EmailEvent::NewSuggestion(suggestion)).is_err() {
+                    return;
+                }
             }
+            if tx
+                .send(EmailEvent::PollSummary {
+                    checked_at,
+                    unread_count: current_unread_ids.len(),
+                    actionable_count,
+                    ok: true,
+                })
+                .is_err()
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
     rx
@@ -529,6 +579,10 @@ fn main() -> io::Result<()> {
         update_rx: None,
         suggestions: Vec::new(),
         suggestions_selected: 0,
+        suggestions_last_polled_at: None,
+        suggestions_last_poll_unread: 0,
+        suggestions_last_poll_actionable: 0,
+        suggestions_last_poll_ok: true,
         suggestions_rx: None,
         task_email_map: std::collections::HashMap::new(),
         calendar_events: Vec::new(),
@@ -4091,6 +4145,18 @@ fn poll_suggestions(app: &mut App) -> bool {
                 }
                 has_new = true;
             }
+            EmailEvent::PollSummary {
+                checked_at,
+                unread_count,
+                actionable_count,
+                ok,
+            } => {
+                app.suggestions_last_polled_at = Some(checked_at);
+                app.suggestions_last_poll_unread = unread_count;
+                app.suggestions_last_poll_actionable = actionable_count;
+                app.suggestions_last_poll_ok = ok;
+                has_new = true;
+            }
         }
     }
     clamp_suggestions_selection(app);
@@ -5523,6 +5589,29 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             SetAttribute(Attribute::Reset),
             ResetColor
         )?;
+        if connected {
+            let poll_note = if let Some(checked_at) = app.suggestions_last_polled_at {
+                let checked_local = checked_at.with_timezone(&Local).format("%H:%M:%S");
+                if app.suggestions_last_poll_ok {
+                    format!(
+                        "  Last check {} • unread {} • actionable {}",
+                        checked_local,
+                        app.suggestions_last_poll_unread,
+                        app.suggestions_last_poll_actionable
+                    )
+                } else {
+                    format!("  Last check {} • poll failed", checked_local)
+                }
+            } else {
+                "  Waiting for first poll...".to_string()
+            };
+            queue!(
+                stdout,
+                SetForegroundColor(Color::DarkGrey),
+                Print(clamp_text(&poll_note, content_width.saturating_sub(18))),
+                ResetColor
+            )?;
+        }
 
         let body_start = suggestions_y + 2;
         let body_height = suggestions_height.saturating_sub(2);
@@ -5539,11 +5628,24 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
                     ResetColor
                 )?;
             } else if app.suggestions.is_empty() {
+                let empty_msg = if let Some(checked_at) = app.suggestions_last_polled_at {
+                    let checked_local = checked_at.with_timezone(&Local).format("%H:%M:%S");
+                    if app.suggestions_last_poll_ok {
+                        format!(" No suggestions yet. Last checked {}.", checked_local)
+                    } else {
+                        format!(
+                            " No suggestions yet. Last poll failed at {}.",
+                            checked_local
+                        )
+                    }
+                } else {
+                    " No suggestions yet. Waiting for first poll.".to_string()
+                };
                 queue!(
                     stdout,
                     MoveTo(x, body_start),
                     SetForegroundColor(Color::DarkGrey),
-                    Print(" No suggestions yet. Polling every 60s."),
+                    Print(clamp_text(&empty_msg, content_width)),
                     ResetColor
                 )?;
             } else {
