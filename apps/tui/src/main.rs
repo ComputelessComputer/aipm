@@ -6671,6 +6671,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
         let ids = kanban_task_ids(&app.tasks, *stage);
         let count = ids.len();
         let stage_idx = stage.stage_index();
+        let blank_col = pad_to_width("", col_width);
 
         // ── Column header: "Todo (25)" ──
         let header = format!("{} ({})", stage.title(), count);
@@ -6681,7 +6682,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
                 SetAttribute(Attribute::Underlined),
-                Print(clamp_text(&header, col_width)),
+                Print(pad_to_width(&clamp_text(&header, col_width), col_width)),
                 SetAttribute(Attribute::Reset),
                 ResetColor
             )?;
@@ -6690,7 +6691,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 stdout,
                 SetForegroundColor(progress_color(*stage)),
                 SetAttribute(Attribute::Bold),
-                Print(clamp_text(&header, col_width)),
+                Print(pad_to_width(&clamp_text(&header, col_width), col_width)),
                 SetAttribute(Attribute::Reset),
                 ResetColor
             )?;
@@ -6732,6 +6733,11 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
         let has_above = scroll_val > 0;
         let has_below = scroll_val + visible_count < count;
 
+        // Clear this column's list area every frame so prior rows don't ghost while scrolling.
+        for y in list_top..list_bottom {
+            queue!(stdout, MoveTo(cx, y), Print(&blank_col))?;
+        }
+
         // ── Overflow: above ──
         let mut y_cur = list_top;
         if has_above {
@@ -6740,7 +6746,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 stdout,
                 MoveTo(cx, y_cur),
                 SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text(&above_text, col_width)),
+                Print(pad_to_width(&clamp_text(&above_text, col_width), col_width)),
                 ResetColor
             )?;
             y_cur += 1;
@@ -6858,7 +6864,7 @@ fn render_kanban_tab(stdout: &mut Stdout, app: &mut App, cols: u16, rows: u16) -
                 stdout,
                 MoveTo(cx, y_below),
                 SetForegroundColor(Color::DarkGrey),
-                Print(clamp_text(&below_text, col_width)),
+                Print(pad_to_width(&clamp_text(&below_text, col_width), col_width)),
                 ResetColor
             )?;
         }
