@@ -45,7 +45,11 @@ const features = [
   <section class="hero">
     <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
     <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
-    <pre class="install-cmd" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm')" title="Click to copy"><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
+    <pre
+      class="install-cmd"
+      onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); prompt.textContent = '✓'; this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.textContent = '$'; this.classList.remove('copied'); }, 1200);"
+      title="Click to copy"
+    ><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
   </section>
 
   <!-- Value Props -->
@@ -173,6 +177,11 @@ const features = [
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
+  }
+
+  .install-cmd.copied .terminal-prompt {
+    color: #00ff88;
+    opacity: 1;
   }
 
   @media (max-width: 640px) {
