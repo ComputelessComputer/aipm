@@ -1264,7 +1264,10 @@ fn triage_tool_defs(provider: Provider, bucket_names: &[String]) -> serde_json::
                     "description": {"type": "string"},
                     "priority": {"type": "string", "enum": ["Low", "Medium", "High", "Critical"]},
                     "progress": {"type": "string", "enum": ["Backlog", "Todo", "In progress", "Done"]},
-                    "due_date": {"type": "string", "description": "YYYY-MM-DD format"},
+                    "due_date": {
+                        "type": ["string", "null"],
+                        "description": "YYYY-MM-DD format, or null to clear due date"
+                    },
                     "dependencies": {
                         "type": "array",
                         "items": {"type": "string"},
