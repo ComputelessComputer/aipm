@@ -900,7 +900,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Char('3') => {
             app.tab = Tab::Default;
-            app.focus = Focus::Input;
+            app.focus = Focus::Board;
             app.status = None;
             return Ok(false);
         }
@@ -987,7 +987,7 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Char('3') => {
             app.tab = Tab::Default;
-            app.focus = Focus::Input;
+            app.focus = Focus::Board;
             app.status = None;
         }
         KeyCode::Char('4') => {
