@@ -171,7 +171,7 @@ footer .footer-links a:hover {
 
 main {
   flex: 1;
-  max-width: var(--max-width);
+  max-width: 100%;
   margin: 0 auto;
   width: 100%;
   padding: clamp(2.3rem, 4.7vw, 4.5rem) clamp(1.25rem, 3.2vw, 2.9rem) clamp(3.2rem, 8vw, 6.2rem);
