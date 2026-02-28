@@ -16,7 +16,7 @@ alwaysApply: true
 
 ## Releases
 
-- When asked to create a release: bump the version in `Cargo.toml`, commit, push, then create the release with `gh release create`.
+- When asked to create a release: bump the version in `apps/tui/Cargo.toml`, commit, push, then create the release with `gh release create`.
 - Releases must be published immediately — do **not** use `--draft`.
 - Include release notes with concise, descriptive bullet points explaining what changed (e.g. `- Add @ autocomplete dropdown for selecting tasks by ID or title`). Do not just list version numbers or raw commit messages.
 - Each bullet should describe the user-facing change, not implementation details.
@@ -29,8 +29,8 @@ alwaysApply: true
 ## General
 
 - Avoid creating unnecessary structs, enums, or traits if they are not shared. Prefer inlining types when they're only used in one place.
-- Run `cargo fmt` before committing to ensure consistent formatting.
-- Run `cargo clippy` and fix any warnings before committing.
-- Run `cargo check` periodically while making Rust changes to catch errors early — don't wait until the end.
-- Run `cargo build` after code changes to verify compilation before committing.
+- Run `cargo fmt --manifest-path apps/tui/Cargo.toml` before committing to ensure consistent formatting.
+- Run `cargo clippy --manifest-path apps/tui/Cargo.toml --all-targets -- -D warnings` and fix any warnings before committing.
+- Run `cargo check --manifest-path apps/tui/Cargo.toml` periodically while making Rust changes to catch errors early — don't wait until the end.
+- Run `cargo build --manifest-path apps/tui/Cargo.toml` after code changes to verify compilation before committing.
 - Keep commits small and reviewable.

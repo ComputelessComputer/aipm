@@ -8,7 +8,7 @@ class Aipm < Formula
   depends_on "rust" => :build
 
   def install
-    system "cargo", "install", *std_cargo_args
+    system "cargo", "install", *std_cargo_args(path: "apps/tui")
   end
 
   test do

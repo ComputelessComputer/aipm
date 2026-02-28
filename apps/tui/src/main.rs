@@ -5343,7 +5343,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
             _ => "[ ]",
         };
         let has_children = app.tasks.iter().any(|t| t.parent_id == Some(task.id));
-        let expand_icon = if !is_child && has_children {
+        let tree_prefix = if !is_child && has_children {
             if app.checklist_expanded.contains(&task.id) {
                 "▾ "
             } else {
@@ -5354,6 +5354,7 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         } else {
             "  "
         };
+        let expand_icon = pad_to_width(tree_prefix, 4);
 
         let due_str = task
             .due_date

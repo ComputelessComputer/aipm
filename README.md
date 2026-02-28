@@ -32,8 +32,8 @@ A terminal-based AI-powered project manager built in Rust.
 ## Quick Start
 
 ```sh
-cargo build --release
-./target/release/aipm
+cargo build --manifest-path apps/tui/Cargo.toml --release
+./apps/tui/target/release/aipm
 ```
 
 Set up AI (required for triage and email filtering):
@@ -61,19 +61,19 @@ aipm suggestions sync --limit 5
 ## Documentation
 
 ### CLI
-- [Task Commands](docs/cli/tasks.md) - CRUD operations for tasks
-- [Bucket Commands](docs/cli/buckets.md) - Manage task columns/categories
-- [Undo/History](docs/cli/undo.md) - Rollback operations
+- [Task Commands](apps/tui/docs/cli/tasks.md) - CRUD operations for tasks
+- [Bucket Commands](apps/tui/docs/cli/buckets.md) - Manage task columns/categories
+- [Undo/History](apps/tui/docs/cli/undo.md) - Rollback operations
 
 ### Features
-- [AI Triage](docs/features/ai.md) - Natural language task management
-- [Email Suggestions](docs/features/suggestions.md) - Apple Mail MCP integration
+- [AI Triage](apps/tui/docs/features/ai.md) - Natural language task management
+- [Email Suggestions](apps/tui/docs/features/suggestions.md) - Apple Mail MCP integration
 
 ### UI
-- [Keybindings](docs/ui/keybindings.md) - Complete keyboard reference
+- [Keybindings](apps/tui/docs/ui/keybindings.md) - Complete keyboard reference
 
 ### Data
-- [Storage Format](docs/data/storage.md) - File-per-task architecture details
+- [Storage Format](apps/tui/docs/data/storage.md) - File-per-task architecture details
 
 ## License
 

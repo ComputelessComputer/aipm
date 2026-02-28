@@ -1,0 +1,9 @@
+{
+  "name": "aipm-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.30.2",
+  "scripts": {
+    "web:dev": "pnpm --filter @aipm/website dev",
+    "web:build": "pnpm --filter @aipm/website build"
+  }
+}

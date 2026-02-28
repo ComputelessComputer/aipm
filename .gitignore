@@ -1,6 +1,8 @@
 /target
+/node_modules
+/apps/tui/target
 
-# Website
-website/node_modules/
-website/dist/
-website/.astro/
+# Web app
+/apps/web/node_modules/
+/apps/web/dist/
+/apps/web/.astro/

@@ -4,16 +4,16 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+      - 'apps/tui/src/**'
+      - 'apps/tui/Cargo.toml'
+      - 'apps/tui/Cargo.lock'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+      - 'apps/tui/src/**'
+      - 'apps/tui/Cargo.toml'
+      - 'apps/tui/Cargo.lock'
       - '.github/workflows/ci.yml'
 
 env:
@@ -23,6 +23,9 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,6 +35,9 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +48,9 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,6 +65,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: apps/tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -68,6 +80,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: apps/tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

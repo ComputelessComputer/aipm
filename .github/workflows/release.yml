@@ -12,6 +12,9 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: apps/tui
     strategy:
       matrix:
         include:
@@ -58,7 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          path: apps/tui/${{ matrix.archive }}
 
   release:
     name: Create Release
@@ -97,15 +100,15 @@ jobs:
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          sed -i 's|url ".*"|url "https://github.com/ComputelessComputer/aipm/archive/refs/tags/'"${GITHUB_REF_NAME}"'.tar.gz"|' Formula/aipm.rb
-          sed -i 's|sha256 ".*"|sha256 "${{ steps.sha.outputs.sha256 }}"|' Formula/aipm.rb
+          sed -i 's|url ".*"|url "https://github.com/ComputelessComputer/aipm/archive/refs/tags/'"${GITHUB_REF_NAME}"'.tar.gz"|' apps/tui/Formula/aipm.rb
+          sed -i 's|sha256 ".*"|sha256 "${{ steps.sha.outputs.sha256 }}"|' apps/tui/Formula/aipm.rb
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/ComputelessComputer/homebrew-aipm.git" tap || {
             mkdir tap && cd tap && git init && git remote add origin "https://x-access-token:${TAP_TOKEN}@github.com/ComputelessComputer/homebrew-aipm.git"
           }
 
           mkdir -p tap/Formula
-          cp Formula/aipm.rb tap/Formula/
+          cp apps/tui/Formula/aipm.rb tap/Formula/
 
           cd tap
           git config user.name "github-actions[bot]"
