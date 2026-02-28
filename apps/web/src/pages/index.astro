@@ -121,14 +121,14 @@ const features = [
     font-size: 0.73rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--color-text-muted);
+    color: #b6bee2;
   }
 
   .kicker-dot {
     width: 0.45rem;
     height: 0.45rem;
     border-radius: 999px;
-    background: var(--color-accent);
+    background: linear-gradient(135deg, #6d63ff, #ff8a4c);
   }
 
   .hero {
@@ -142,8 +142,22 @@ const features = [
     content: "";
     position: absolute;
     inset: 0;
-    background-image: repeating-linear-gradient(135deg, rgba(68, 227, 184, 0.08) 0, rgba(68, 227, 184, 0.08) 1px, transparent 1px, transparent 7px);
-    opacity: 0.45;
+    background-image: repeating-linear-gradient(135deg, rgba(125, 138, 255, 0.09) 0, rgba(125, 138, 255, 0.09) 1px, transparent 1px, transparent 9px);
+    opacity: 0.38;
+    pointer-events: none;
+  }
+
+  .hero::after {
+    content: "";
+    position: absolute;
+    top: -18%;
+    right: -22%;
+    width: min(64vw, 860px);
+    height: min(64vw, 860px);
+    border-radius: 50%;
+    background: conic-gradient(from 215deg at 50% 50%, rgba(96, 85, 255, 0.96), rgba(255, 121, 67, 0.92), rgba(243, 91, 228, 0.82), rgba(96, 85, 255, 0.96));
+    filter: blur(38px) saturate(115%);
+    opacity: 0.26;
     pointer-events: none;
   }
 
@@ -178,12 +192,15 @@ const features = [
   .hero-tagline {
     margin-bottom: 0.95rem;
     font-size: clamp(1rem, 1.7vw, 1.7rem);
-    color: var(--color-text-muted);
+    color: #b4bcdf;
     white-space: nowrap;
   }
 
   .hero-tagline-highlight {
-    color: var(--color-accent);
+    background: linear-gradient(90deg, #938bff 0%, #69d5ff 42%, #ff9a59 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
     font-weight: 600;
   }
 
@@ -193,7 +210,7 @@ const features = [
     font-family: var(--font-mono);
     font-size: clamp(0.95rem, 1.2vw, 1.15rem);
     line-height: 1.52;
-    color: var(--color-secondary);
+    color: #d6ddfa;
   }
 
   .install-cmd {
@@ -203,22 +220,22 @@ const features = [
     text-align: left;
     cursor: pointer;
     border-radius: 10px;
-    border: 1px solid var(--color-border);
-    background: #0a1826;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(116, 133, 226, 0.55);
+    background: linear-gradient(140deg, rgba(22, 30, 68, 0.95), rgba(13, 20, 51, 0.9));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 10px 26px rgba(7, 9, 20, 0.45);
     padding: 0.9rem 1rem;
     transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
 
   .install-cmd:hover {
-    border-color: #355776;
-    background: #0c1c2d;
+    border-color: rgba(144, 154, 246, 0.8);
+    background: linear-gradient(140deg, rgba(28, 39, 84, 0.96), rgba(16, 25, 58, 0.93));
   }
 
   .install-cmd code {
     display: flex;
     align-items: center;
-    color: var(--color-secondary);
+    color: #e4e9ff;
     font-size: clamp(0.86rem, 1.45vw, 1rem);
     line-height: 1.35;
     white-space: nowrap;
@@ -229,19 +246,19 @@ const features = [
   }
 
   .terminal-prompt {
-    color: var(--color-accent);
+    color: #7f76ff;
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
   }
 
   .install-cmd.copied .terminal-prompt {
-    color: var(--color-accent-dim);
+    color: #3ed6a4;
   }
 
   .hero-visual {
-    border: 1px dashed #35526b;
-    background: linear-gradient(180deg, rgba(53, 87, 118, 0.22), rgba(10, 24, 38, 0.48));
+    border: 1px solid rgba(122, 138, 232, 0.42);
+    background: radial-gradient(circle at 12% 10%, rgba(140, 120, 255, 0.19), transparent 38%), radial-gradient(circle at 95% 95%, rgba(255, 144, 84, 0.16), transparent 40%), linear-gradient(160deg, rgba(20, 28, 64, 0.8), rgba(13, 19, 46, 0.85));
     border-radius: 12px;
     padding: clamp(1.2rem, 2.8vw, 1.8rem);
     min-height: 260px;
@@ -258,18 +275,18 @@ const features = [
     justify-content: space-between;
     gap: 1.2rem;
     padding-top: 0.72rem;
-    border-top: 1px dashed #2b455c;
+    border-top: 1px dashed rgba(140, 153, 228, 0.35);
   }
 
   .signal-dot {
     width: 0.5rem;
     height: 0.5rem;
     border-radius: 999px;
-    background: #6f8ba6;
+    background: #8d98d2;
   }
 
   .signal-dot.accent {
-    background: var(--color-accent);
+    background: linear-gradient(135deg, #6f66ff, #ff8e54);
   }
 
   .value-props,
@@ -285,8 +302,8 @@ const features = [
   }
 
   .prop {
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-elevated);
+    border: 1px solid rgba(105, 124, 212, 0.45);
+    background: linear-gradient(160deg, rgba(21, 30, 68, 0.68), rgba(14, 21, 48, 0.82));
     border-radius: 10px;
     padding: 1.25rem;
   }
@@ -300,7 +317,7 @@ const features = [
   .prop p {
     font-family: var(--font-mono);
     font-size: 0.95rem;
-    color: var(--color-secondary);
+    color: #d2daf8;
     line-height: 1.6;
   }
 
@@ -316,8 +333,8 @@ const features = [
     height: 0;
     overflow: hidden;
     border-radius: 12px;
-    border: 1px solid var(--color-border);
-    background: #081623;
+    border: 1px solid rgba(105, 124, 212, 0.45);
+    background: #0a1434;
   }
 
   .video-container iframe {
@@ -335,8 +352,8 @@ const features = [
   }
 
   .feature {
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-elevated);
+    border: 1px solid rgba(105, 124, 212, 0.45);
+    background: linear-gradient(160deg, rgba(20, 29, 66, 0.7), rgba(13, 20, 45, 0.84));
     border-radius: 10px;
     padding: 1.15rem;
   }
@@ -349,7 +366,7 @@ const features = [
   .feature p {
     font-family: var(--font-mono);
     font-size: 0.88rem;
-    color: var(--color-secondary);
+    color: #d2daf8;
     line-height: 1.5;
   }
 
