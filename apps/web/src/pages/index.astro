@@ -10,7 +10,7 @@ const features = [
     desc: "Just type what you need. The AI understands intent and executes through tool calls."
   },
   {
-    title: "Email inbox → task list",
+    title: "Email inbox -> task list",
     desc: "Surfaces actionable emails via AI. Marketing and noise filtered out automatically."
   },
   {
@@ -41,36 +41,51 @@ const features = [
 ---
 
 <BaseLayout title={title} description={description}>
-  <!-- Hero -->
   <section class="hero">
-    <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
-    <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
-    <pre
-      class="install-cmd"
-      onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); prompt.textContent = '✓'; this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.textContent = '$'; this.classList.remove('copied'); }, 1200);"
-      title="Click to copy"
-    ><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="section-kicker"><span class="kicker-dot"></span>vision</p>
+        <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
+        <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
+        <p class="hero-desc">The AI project manager built for terminal operators. Tasks stay local as files, and the agent executes work through real tools instead of hand-wavy summaries.</p>
+        <pre
+          class="install-cmd"
+          onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); prompt.textContent = '✓'; this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.textContent = '$'; this.classList.remove('copied'); }, 1200);"
+          title="Click to copy"
+        ><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
+      </div>
+
+      <div class="hero-visual" aria-hidden="true">
+        <div class="signal-row"><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span></div>
+        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span></div>
+        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span></div>
+        <div class="signal-row"><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot"></span></div>
+        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span></div>
+      </div>
+    </div>
   </section>
 
-  <!-- Value Props -->
   <section class="value-props">
-    <div class="prop">
-      <h3>local-first</h3>
-      <p>Your tasks live as plain files on your filesystem. No servers, no sync, no lock-in. Grep, sed, or script your way through everything.</p>
-    </div>
-    <div class="prop">
-      <h3>cli-first</h3>
-      <p>Headless commands with JSON output. Built for scripting and AI coding agents. Works as well in a pipeline as it does interactively.</p>
-    </div>
-    <div class="prop">
-      <h3>super fast</h3>
-      <p>Native Rust TUI. Instant startup, zero latency navigation, no Electron, no browser. Just your terminal.</p>
+    <p class="section-kicker"><span class="kicker-dot"></span>foundation</p>
+    <div class="value-grid">
+      <div class="prop">
+        <h3>local-first</h3>
+        <p>Your tasks live as plain files on your filesystem. No servers, no sync, no lock-in. Grep, sed, or script your way through everything.</p>
+      </div>
+      <div class="prop">
+        <h3>cli-first</h3>
+        <p>Headless commands with JSON output. Built for scripting and AI coding agents. Works as well in a pipeline as it does interactively.</p>
+      </div>
+      <div class="prop">
+        <h3>super fast</h3>
+        <p>Native Rust TUI. Instant startup, zero latency navigation, no Electron, no browser. Just your terminal.</p>
+      </div>
     </div>
   </section>
 
-  <!-- Demo -->
   <section class="demo">
-    <h2>demo</h2>
+    <p class="section-kicker"><span class="kicker-dot"></span>demo</p>
+    <h2>Watch aipm in flow</h2>
     <div class="video-container">
       <iframe
         src="https://www.youtube.com/embed/PGFg01h9LHU"
@@ -82,9 +97,9 @@ const features = [
     </div>
   </section>
 
-  <!-- Features -->
   <section class="features">
-    <h2>features</h2>
+    <p class="section-kicker"><span class="kicker-dot"></span>features</p>
+    <h2>Agent-native task operations</h2>
     <div class="features-grid">
       {features.map((f) => (
         <div class="feature">
@@ -94,25 +109,58 @@ const features = [
       ))}
     </div>
   </section>
-
 </BaseLayout>
 
 <style>
-  /* Hero */
+  .section-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.73rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+  }
+
+  .kicker-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: var(--color-accent);
+  }
+
   .hero {
-    text-align: center;
-    padding: var(--space-3xl) 0;
+    position: relative;
+    padding-bottom: clamp(2.8rem, 5vw, 4.8rem);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: repeating-linear-gradient(135deg, rgba(20, 20, 19, 0.03) 0, rgba(20, 20, 19, 0.03) 1px, transparent 1px, transparent 7px);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .hero-grid {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: clamp(1.8rem, 3.5vw, 3.4rem);
+  }
+
+  .hero-copy {
+    max-width: 800px;
   }
 
   .hero-title {
-    font-size: 4rem;
-    margin-bottom: var(--space-md);
-  }
-
-  @media (min-width: 768px) {
-    .hero-title {
-      font-size: 5rem;
-    }
+    margin-bottom: 0.95rem;
+    line-height: 0.95;
   }
 
   .cursor {
@@ -125,134 +173,136 @@ const features = [
   }
 
   .hero-tagline {
-    font-size: clamp(1rem, 2.5vw, 1.25rem);
+    margin-bottom: 0.95rem;
+    font-size: clamp(1rem, 1.7vw, 1.7rem);
     color: var(--color-text-muted);
-    margin-bottom: var(--space-xl);
     white-space: nowrap;
   }
 
   .hero-tagline-highlight {
-    color: var(--color-accent);
+    color: var(--color-accent-dim);
     font-weight: 600;
+  }
+
+  .hero-desc {
+    max-width: 64ch;
+    margin-bottom: 1.45rem;
+    font-family: var(--font-mono);
+    font-size: clamp(0.95rem, 1.2vw, 1.15rem);
+    line-height: 1.52;
+    color: var(--color-secondary);
   }
 
   .install-cmd {
     display: inline-block;
     width: fit-content;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
     cursor: pointer;
     border-radius: 10px;
-    border: 1px solid #1f2229;
-    background: #090b10;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-    padding: 1rem 1.1rem;
+    border: 1px solid var(--color-border);
+    background: #f3f0ec;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    padding: 0.9rem 1rem;
     transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
 
   .install-cmd:hover {
-    border-color: #2f3440;
-    background: #0b0e15;
-  }
-
-  .install-cmd:active {
-    background: #090b10;
+    border-color: #b9b0a8;
+    background: #f7f5f2;
   }
 
   .install-cmd code {
     display: flex;
     align-items: center;
-    justify-content: center;
+    color: var(--color-secondary);
+    font-size: clamp(0.86rem, 1.45vw, 1rem);
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow-x: auto;
     background: none;
     border: 0;
-    color: #d8dde8;
-    font-size: clamp(0.9rem, 2.2vw, 1.05rem);
-    line-height: 1.35;
     padding: 0;
-    white-space: nowrap;
   }
 
   .terminal-prompt {
-    color: #d8dde8;
-    opacity: 0.9;
+    color: var(--color-text);
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
   }
 
   .install-cmd.copied .terminal-prompt {
-    color: #00ff88;
-    opacity: 1;
+    color: var(--color-accent-dim);
   }
 
-  @media (max-width: 640px) {
-    .install-cmd {
-      display: block;
-      width: 100%;
-      padding: 0.85rem 0.9rem;
-    }
-
-    .install-cmd code {
-      overflow-x: auto;
-      display: flex;
-      justify-content: flex-start;
-    }
+  .hero-visual {
+    border: 1px dashed #bdb5ad;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.08));
+    border-radius: 12px;
+    padding: clamp(1.2rem, 2.8vw, 1.8rem);
+    min-height: 260px;
+    display: grid;
+    gap: 1.45rem;
+    align-content: center;
   }
 
-  /* Value Props */
-  .value-props {
+  .signal-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2rem;
+    padding-top: 0.72rem;
+    border-top: 1px dashed #d3cdc7;
+  }
+
+  .signal-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: #6f6962;
+  }
+
+  .signal-dot.accent {
+    background: var(--color-accent);
+  }
+
+  .value-props,
+  .demo,
+  .features {
+    padding-top: clamp(2.2rem, 4.5vw, 4.2rem);
+  }
+
+  .value-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: var(--space-lg);
-    padding: var(--space-2xl) 0;
-    border-top: 1px solid var(--color-border);
-  }
-
-  @media (min-width: 640px) {
-    .value-props {
-      grid-template-columns: repeat(3, 1fr);
-    }
+    gap: 1rem;
   }
 
   .prop {
-    padding: var(--space-lg);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    border-radius: 10px;
+    padding: 1.25rem;
   }
 
   .prop h3 {
-    font-size: 1.125rem;
-    color: var(--color-accent);
-    margin-bottom: var(--space-sm);
+    font-size: 1.18rem;
+    margin-bottom: 0.55rem;
+    color: var(--color-text);
   }
 
   .prop p {
-    font-size: 0.9rem;
-    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    color: var(--color-secondary);
     line-height: 1.6;
   }
 
-  .cta-btn {
-    display: inline-block;
-    font-family: var(--font-mono);
-    font-size: 0.875rem;
-    padding: var(--space-sm) var(--space-lg);
-    border: 1px solid var(--color-accent);
-    border-radius: 4px;
-    color: var(--color-accent);
-    transition: all var(--transition-fast);
-  }
-
-  .cta-btn:hover {
-    background-color: var(--color-accent);
-    color: var(--color-bg);
-  }
-
-  /* Demo */
-  .demo {
-    padding: var(--space-2xl) 0;
-  }
-
-  .demo h2 {
-    margin-bottom: var(--space-lg);
+  .demo h2,
+  .features h2 {
+    margin-bottom: 1.2rem;
+    max-width: 16ch;
   }
 
   .video-container {
@@ -260,8 +310,9 @@ const features = [
     padding-bottom: 56.25%;
     height: 0;
     overflow: hidden;
-    border-radius: 8px;
+    border-radius: 12px;
     border: 1px solid var(--color-border);
+    background: #dfd9d2;
   }
 
   .video-container iframe {
@@ -272,43 +323,59 @@ const features = [
     height: 100%;
   }
 
-  /* Features */
-  .features {
-    padding: var(--space-2xl) 0;
-  }
-
-  .features h2 {
-    margin-bottom: var(--space-lg);
-  }
-
   .features-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: var(--space-lg);
-  }
-
-  @media (min-width: 640px) {
-    .features-grid {
-      grid-template-columns: repeat(2, 1fr);
-    }
+    gap: 1rem;
   }
 
   .feature {
-    padding: var(--space-lg);
-    background-color: var(--color-bg-elevated);
     border: 1px solid var(--color-border);
-    border-radius: 8px;
+    background: var(--color-bg-elevated);
+    border-radius: 10px;
+    padding: 1.15rem;
   }
 
   .feature h3 {
-    font-size: 1rem;
-    margin-bottom: var(--space-sm);
+    font-size: 1.02rem;
+    margin-bottom: 0.4rem;
   }
 
   .feature p {
-    font-size: 0.875rem;
-    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+    color: var(--color-secondary);
     line-height: 1.5;
   }
 
+  @media (min-width: 900px) {
+    .hero-grid {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+      align-items: end;
+    }
+
+    .value-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .features-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .hero-tagline {
+      font-size: 0.95rem;
+    }
+
+    .install-cmd {
+      display: block;
+      width: 100%;
+      padding: 0.8rem 0.88rem;
+    }
+
+    .install-cmd code {
+      justify-content: flex-start;
+    }
+  }
 </style>
