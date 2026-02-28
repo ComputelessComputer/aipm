@@ -5309,48 +5309,12 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
         SetAttribute(Attribute::Reset)
     )?;
 
-    queue!(stdout, MoveTo(x, 4), Print(" "))?;
-    let tasks_active = app.checklist_section == ChecklistSection::Tasks;
-    if tasks_active {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Black),
-            SetBackgroundColor(Color::White),
-            Print(" Tasks "),
-            ResetColor
-        )?;
-    } else {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            Print(" Tasks "),
-            ResetColor
-        )?;
-    }
-    queue!(stdout, Print("  "))?;
-    if !tasks_active {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Black),
-            SetBackgroundColor(Color::White),
-            Print(" Suggestions "),
-            ResetColor
-        )?;
-    } else {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            Print(" Suggestions "),
-            ResetColor
-        )?;
-    }
-
     let ordered = app
         .checklist_frozen_order
         .as_ref()
         .cloned()
         .unwrap_or_else(|| checklist_task_order(&app.tasks, &app.checklist_expanded));
-    let list_start_y = 6u16;
+    let list_start_y = 5u16;
     let help_y = rows.saturating_sub(5);
     let content_bottom = help_y.saturating_sub(1);
     let content_height = content_bottom
@@ -5633,9 +5597,9 @@ fn render_checklist_tab(stdout: &mut Stdout, app: &App, cols: u16, rows: u16) ->
     }
 
     let help = if app.checklist_section == ChecklistSection::Tasks {
-        " h/l section • enter toggle • space expand • e edit • d delete • i input"
+        " tab section • enter toggle • space expand • e edit • d delete • i input"
     } else {
-        " h/l section • j/k navigate • enter create task • d dismiss • i input"
+        " tab section • j/k navigate • enter create task • d dismiss • i input"
     };
     queue!(
         stdout,
@@ -5654,6 +5618,20 @@ fn handle_checklist_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     let _count = ordered.len();
 
     match key.code {
+        KeyCode::Tab => {
+            app.checklist_section = match app.checklist_section {
+                ChecklistSection::Tasks => ChecklistSection::Suggestions,
+                ChecklistSection::Suggestions => ChecklistSection::Tasks,
+            };
+            app.checklist_frozen_order = None;
+        }
+        KeyCode::BackTab => {
+            app.checklist_section = match app.checklist_section {
+                ChecklistSection::Tasks => ChecklistSection::Suggestions,
+                ChecklistSection::Suggestions => ChecklistSection::Tasks,
+            };
+            app.checklist_frozen_order = None;
+        }
         KeyCode::Char('h') | KeyCode::Left => {
             app.checklist_section = ChecklistSection::Tasks;
             app.checklist_frozen_order = None;
