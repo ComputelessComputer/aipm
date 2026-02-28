@@ -49,9 +49,8 @@ const features = [
         <h1 class="hero-title">Run every project with execution-grade AI orchestration, from inbox to roadmap to shipped work with local tasks and real tool execution.</h1>
         <pre
           class="install-cmd"
-          onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); if (!prompt) return; prompt.classList.add('copied'); this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.classList.remove('copied'); this.classList.remove('copied'); }, 1200);"
           title="Click to copy"
-        ><code><span class="terminal-prompt" aria-hidden="true"><span class="prompt-dollar">$</span><span class="prompt-check"><CheckIcon size={16} strokeWidth={2.5} /></span></span><span>brew tap ComputelessComputer/aipm && brew install aipm</span></code></pre>
+        ><code><span class="terminal-prompt" aria-hidden="true">$</span><span>brew tap ComputelessComputer/aipm && brew install aipm</span><button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const btn = this; btn.classList.add('copied'); clearTimeout(btn.copyTimer); btn.copyTimer = setTimeout(() => btn.classList.remove('copied'), 1200);" aria-label="Copy to clipboard"><span class="copy-icon"><svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg></span><span class="check-icon"><CheckIcon size={16} strokeWidth={2.5} /></span></button></code></pre>
       </div>
     </div>
   </section>
@@ -160,15 +159,14 @@ const features = [
   }
 
   .install-cmd {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
     width: fit-content;
     max-width: 100%;
     text-align: left;
-    cursor: pointer;
     border-radius: 10px;
     border: 1px solid #e5dbc8;
     background: #f3ede4;
-    box-shadow: 0 8px 18px rgba(44, 36, 24, 0.06);
     padding: 0.9rem 1rem;
     transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
@@ -181,6 +179,7 @@ const features = [
   .install-cmd code {
     display: flex;
     align-items: center;
+    gap: 0.5rem;
     color: #2c2418;
     font-size: clamp(0.86rem, 1.45vw, 1rem);
     line-height: 1.35;
@@ -189,31 +188,54 @@ const features = [
     background: none;
     border: 0;
     padding: 0;
+    width: 100%;
   }
 
   .terminal-prompt {
-    display: inline-flex;
-    align-items: center;
     color: #c07a3e;
     margin-right: 0.6ch;
     user-select: none;
     -webkit-user-select: none;
   }
 
-  .prompt-check {
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    padding: 0.3rem;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    color: #9d8c78;
+    transition: color var(--transition-fast);
+    flex-shrink: 0;
+  }
+
+  .copy-btn:hover {
+    color: #c07a3e;
+  }
+
+  .copy-btn .check-icon {
     display: none;
     line-height: 0;
   }
 
-  .terminal-prompt.copied .prompt-dollar {
+  .copy-btn .copy-icon {
+    display: inline-flex;
+    line-height: 0;
+  }
+
+  .copy-btn.copied .copy-icon {
     display: none;
   }
 
-  .terminal-prompt.copied .prompt-check {
+  .copy-btn.copied .check-icon {
     display: inline-flex;
   }
 
-  .install-cmd.copied .terminal-prompt {
+  .copy-btn.copied {
     color: #5a9a6b;
   }
 
