@@ -137,10 +137,10 @@ const features = [
   }
 
   .install-cmd {
-    display: block;
-    width: min(100%, 920px);
-    margin: 0 auto;
-    text-align: left;
+    display: inline-block;
+    width: fit-content;
+    max-width: 100%;
+    text-align: center;
     cursor: pointer;
     border-radius: 10px;
     border: 1px solid #1f2229;
@@ -160,8 +160,9 @@ const features = [
   }
 
   .install-cmd code {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    justify-content: center;
     background: none;
     border: 0;
     color: #d8dde8;
@@ -186,12 +187,15 @@ const features = [
 
   @media (max-width: 640px) {
     .install-cmd {
+      display: block;
+      width: 100%;
       padding: 0.85rem 0.9rem;
     }
 
     .install-cmd code {
       overflow-x: auto;
       display: flex;
+      justify-content: flex-start;
     }
   }
 
