@@ -3125,7 +3125,7 @@ fn handle_kanban_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Up | KeyCode::Char('k') => move_kanban_selection(app, -1),
         KeyCode::Down | KeyCode::Char('j') => move_kanban_selection(app, 1),
-        KeyCode::Char('p') | KeyCode::Char(' ') => {
+        KeyCode::Char('p') => {
             if let Some(id) = app.kanban_selected {
                 let now = Utc::now();
                 if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
