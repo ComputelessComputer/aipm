@@ -6,3 +6,8 @@
 /apps/web/node_modules/
 /apps/web/dist/
 /apps/web/.astro/
+
+# Local environment files
+.env
+.env.*
+!.env.example
