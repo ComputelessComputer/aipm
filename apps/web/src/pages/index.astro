@@ -46,9 +46,9 @@ const features = [
     <div class="hero-grid">
       <div class="hero-copy">
         <p class="section-kicker"><span class="kicker-dot"></span>vision</p>
-        <h1 class="hero-title">aipm<span class="cursor">_</span></h1>
-        <p class="hero-tagline">Claude Code is for coding. <span class="hero-tagline-highlight">This is for PM-ing.</span></p>
-        <p class="hero-desc">The AI project manager built for terminal operators. Tasks stay local as files, and the agent executes work through real tools instead of hand-wavy summaries.</p>
+        <h1 class="hero-title">Run every project with execution-grade AI orchestration.</h1>
+        <p class="hero-tagline">From inbox to roadmap to shipped work, every task stays local and every action can be executed through real tools.</p>
+        <p class="hero-desc">Built for operators who care about speed, clarity, and control inside the terminal.</p>
         <pre
           class="install-cmd"
           onclick="navigator.clipboard.writeText('brew tap ComputelessComputer/aipm && brew install aipm'); const prompt = this.querySelector('.terminal-prompt'); if (!prompt) return; prompt.classList.add('copied'); this.classList.add('copied'); clearTimeout(this.copyTimer); this.copyTimer = setTimeout(() => { prompt.classList.remove('copied'); this.classList.remove('copied'); }, 1200);"
@@ -57,11 +57,10 @@ const features = [
       </div>
 
       <div class="hero-visual" aria-hidden="true">
-        <div class="signal-row"><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span></div>
-        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span></div>
-        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span></div>
-        <div class="signal-row"><span class="signal-dot accent"></span><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot"></span></div>
-        <div class="signal-row"><span class="signal-dot"></span><span class="signal-dot"></span><span class="signal-dot accent"></span><span class="signal-dot"></span></div>
+        <span class="ribbon ribbon-a"></span>
+        <span class="ribbon ribbon-b"></span>
+        <span class="ribbon ribbon-c"></span>
+        <span class="ribbon ribbon-d"></span>
       </div>
     </div>
   </section>
@@ -136,19 +135,20 @@ const features = [
     position: relative;
     padding: clamp(1.8rem, 3.8vw, 3rem);
     padding-bottom: clamp(2.8rem, 5vw, 4.8rem);
-    border: 1px solid #d9deef;
+    border: 1px solid #dde2f4;
     border-radius: 16px;
-    background: #ffffff;
+    background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
     color: #121a3c;
     text-align: left;
+    overflow: hidden;
   }
 
   .hero .section-kicker {
-    color: #5d6587;
+    color: #646e95;
   }
 
   .hero .kicker-dot {
-    background: #ff7a45;
+    background: linear-gradient(135deg, #6d63ff, #ff8a4c);
   }
 
   .hero-grid {
@@ -161,43 +161,31 @@ const features = [
   }
 
   .hero-copy {
-    max-width: 800px;
+    max-width: 760px;
     justify-self: start;
   }
 
   .hero-title {
-    margin-bottom: 0.95rem;
+    margin-bottom: 1rem;
     line-height: 0.95;
-  }
-
-  .cursor {
-    animation: blink 1s step-end infinite;
-  }
-
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
+    font-size: clamp(2.35rem, 6.2vw, 5.25rem);
+    max-width: 14ch;
   }
 
   .hero-tagline {
-    margin-bottom: 0.95rem;
-    font-size: clamp(1rem, 1.7vw, 1.7rem);
-    color: #636c90;
-    white-space: nowrap;
-  }
-
-  .hero-tagline-highlight {
-    color: #5a54e8;
-    font-weight: 600;
+    margin-bottom: 1rem;
+    max-width: 53ch;
+    font-size: clamp(1.1rem, 1.9vw, 1.8rem);
+    line-height: 1.22;
+    color: #5c6590;
   }
 
   .hero-desc {
-    max-width: 64ch;
+    max-width: 52ch;
     margin-bottom: 1.45rem;
-    font-family: var(--font-mono);
     font-size: clamp(0.95rem, 1.2vw, 1.15rem);
-    line-height: 1.52;
-    color: #556085;
+    line-height: 1.5;
+    color: #4e5882;
   }
 
   .install-cmd {
@@ -259,36 +247,58 @@ const features = [
   }
 
   .hero-visual {
-    border: 1px solid #d6dcf4;
-    background: #ffffff;
+    position: relative;
+    border: 1px solid #d8def3;
+    background: linear-gradient(180deg, #f7f9ff 0%, #f2f6ff 100%);
     border-radius: 12px;
-    padding: clamp(1.2rem, 2.8vw, 1.8rem);
-    min-height: 260px;
-    display: grid;
-    gap: 1.45rem;
-    align-content: center;
+    min-height: 280px;
+    overflow: hidden;
     justify-self: stretch;
     width: 100%;
   }
 
-  .signal-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1.2rem;
-    padding-top: 0.72rem;
-    border-top: 1px dashed #e0e6f6;
-  }
-
-  .signal-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+  .ribbon {
+    position: absolute;
     border-radius: 999px;
-    background: #9ca6cb;
+    transform-origin: center;
+    filter: saturate(110%);
   }
 
-  .signal-dot.accent {
-    background: #ff7a45;
+  .ribbon-a {
+    width: 520px;
+    height: 140px;
+    right: -170px;
+    top: 20px;
+    transform: rotate(-36deg);
+    background: linear-gradient(90deg, rgba(96, 82, 255, 0) 0%, rgba(96, 82, 255, 0.78) 44%, rgba(255, 128, 72, 0.9) 100%);
+  }
+
+  .ribbon-b {
+    width: 540px;
+    height: 160px;
+    right: -170px;
+    top: 110px;
+    transform: rotate(-36deg);
+    background: linear-gradient(90deg, rgba(255, 71, 145, 0) 4%, rgba(255, 71, 145, 0.76) 45%, rgba(255, 183, 42, 0.9) 100%);
+  }
+
+  .ribbon-c {
+    width: 560px;
+    height: 120px;
+    right: -190px;
+    top: 205px;
+    transform: rotate(-36deg);
+    background: linear-gradient(90deg, rgba(110, 93, 255, 0) 0%, rgba(110, 93, 255, 0.74) 46%, rgba(255, 97, 173, 0.78) 100%);
+  }
+
+  .ribbon-d {
+    width: 450px;
+    height: 80px;
+    right: -150px;
+    top: 14px;
+    transform: rotate(-36deg);
+    opacity: 0.55;
+    background: linear-gradient(90deg, rgba(255, 200, 96, 0) 0%, rgba(255, 200, 96, 0.8) 52%, rgba(255, 141, 86, 0.85) 100%);
   }
 
   .value-props,
@@ -375,7 +385,7 @@ const features = [
   @media (min-width: 900px) {
     .hero-grid {
       grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-      align-items: end;
+      align-items: stretch;
     }
 
     .value-grid {
@@ -389,7 +399,7 @@ const features = [
 
   @media (max-width: 640px) {
     .hero-tagline {
-      font-size: 0.95rem;
+      font-size: 1rem;
     }
 
     .install-cmd {
@@ -400,6 +410,18 @@ const features = [
 
     .install-cmd code {
       justify-content: flex-start;
+    }
+
+    .hero-visual {
+      min-height: 220px;
+    }
+
+    .ribbon-a,
+    .ribbon-b,
+    .ribbon-c,
+    .ribbon-d {
+      right: -220px;
+      transform: rotate(-39deg);
     }
   }
 </style>

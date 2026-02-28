@@ -89,11 +89,22 @@ nav .nav-inner {
 
 nav .logo {
   font-family: var(--font-mono);
-  font-size: 1.7rem;
+  font-size: 1.5rem;
   font-weight: 600;
   color: var(--color-text);
-  letter-spacing: -0.02em;
-  text-transform: lowercase;
+  letter-spacing: 0;
+  text-transform: none;
+  min-width: 1ch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+nav .logo .header-cursor {
+  display: inline-block;
+  line-height: 1;
+  color: #4f46e5;
+  animation: blink 1s step-end infinite;
 }
 
 nav .nav-links {
@@ -199,6 +210,11 @@ pre code {
 
 .text-muted { color: var(--color-text-muted); }
 .text-accent { color: var(--color-accent); }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
 
 @media (max-width: 720px) {
   nav {
