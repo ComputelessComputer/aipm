@@ -10,15 +10,31 @@ const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const SCOPES: &str = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly";
 
-const BUNDLED_CLIENT_ID: &str = "PLACEHOLDER.apps.googleusercontent.com";
-const BUNDLED_CLIENT_SECRET: &str = "";
+const PLACEHOLDER_CLIENT_ID: &str = "PLACEHOLDER.apps.googleusercontent.com";
+const BUNDLED_CLIENT_ID: Option<&str> = option_env!("GOOGLE_CLIENT_ID");
+const BUNDLED_CLIENT_SECRET: Option<&str> = option_env!("GOOGLE_CLIENT_SECRET");
+
+fn read_non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
 
 fn client_id() -> String {
-    std::env::var("GOOGLE_CLIENT_ID").unwrap_or_else(|_| BUNDLED_CLIENT_ID.to_string())
+    read_non_empty_env("GOOGLE_CLIENT_ID")
+        .or_else(|| BUNDLED_CLIENT_ID.map(|v| v.to_string()))
+        .unwrap_or_else(|| PLACEHOLDER_CLIENT_ID.to_string())
 }
 
 fn client_secret() -> String {
-    std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_else(|_| BUNDLED_CLIENT_SECRET.to_string())
+    read_non_empty_env("GOOGLE_CLIENT_SECRET")
+        .or_else(|| BUNDLED_CLIENT_SECRET.map(|v| v.to_string()))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -144,12 +160,24 @@ pub fn authorize(data_dir: &Path) -> Result<GoogleToken, String> {
     let verifier = generate_code_verifier();
     let challenge = code_challenge(&verifier);
     let state = random_base64url(16);
+    let cid = client_id();
+    let csec = client_secret();
+
+    if cid == PLACEHOLDER_CLIENT_ID {
+        return Err(
+            "Google OAuth not configured in this build. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or install an official release build.".to_string(),
+        );
+    }
+    if csec.is_empty() {
+        return Err(
+            "Google OAuth client secret missing. Set GOOGLE_CLIENT_SECRET and retry.".to_string(),
+        );
+    }
 
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Failed to bind: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
-    let cid = client_id();
     let auth_url = format!(
         "{AUTH_ENDPOINT}?response_type=code\
          &client_id={}\
