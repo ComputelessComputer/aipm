@@ -48,7 +48,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Validate Google OAuth secrets
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          test -n "$GOOGLE_CLIENT_ID" || { echo "Missing GOOGLE_CLIENT_ID secret"; exit 1; }
+          test -n "$GOOGLE_CLIENT_SECRET" || { echo "Missing GOOGLE_CLIENT_SECRET secret"; exit 1; }
+
       - name: Build
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
